@@ -85,7 +85,7 @@ pub async fn remove_pref_async(path: std::path::PathBuf, fact: String) -> Result
 pub fn read_prefs(path: &Path) -> Result<Option<String>, io::Error> {
     match std::fs::read_to_string(path) {
         Ok(content) => {
-            let content = crate::sanitize::normalise_free_text(&content);
+            let content = crate::sanitize::normalise_preferences(&content);
             if content.trim().is_empty() {
                 Ok(None)
             } else {
@@ -114,12 +114,11 @@ pub fn append_pref(path: &Path, fact: &str) -> Result<(), io::Error> {
     }
 
     // Everything written here is replayed into the system prompt, so it goes
-    // through the same normalisation as any other untrusted text: ANSI escapes,
+    // through the preferences-specific untrusted-text normaliser: ANSI escapes,
     // bidi overrides, private-use and tag-block characters are stripped, and
-    // envelope tags are neutralised. The `remember` tool is model-driven, and
-    // the model can be steered by a hostile tool result, so this text is not
-    // more trusted than command output.
-    let fact = crate::sanitize::normalise_free_text(fact);
+    // envelope tags are neutralised. Preferences use their own file-size cap
+    // below rather than the smaller per-tool-output truncation limit.
+    let fact = crate::sanitize::normalise_preferences(fact);
     let fact = fact.trim();
     if fact.is_empty() {
         return Err(io::Error::other("preference is empty after normalisation"));
@@ -316,6 +315,24 @@ mod tests {
         let saved = read_prefs(&path).unwrap().unwrap();
         assert!(!saved.contains("</user_preferences>"));
         assert!(saved.contains("</user_preferences_BLOCKED>"));
+    }
+
+    #[test]
+    fn read_prefs_preserves_content_up_to_the_preferences_limit() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("prefs.md");
+        let content = "- ".to_string() + &"x".repeat(PREFS_MAX_BYTES as usize - 3) + "\n";
+        assert_eq!(content.len(), PREFS_MAX_BYTES as usize);
+        std::fs::write(&path, &content).unwrap();
+
+        let saved = read_prefs(&path).unwrap().unwrap();
+        assert_eq!(
+            saved.len(),
+            content.len(),
+            "read_prefs truncated preferences"
+        );
+        assert_eq!(saved, content);
+        assert!(!saved.contains("[...truncated]"));
     }
 
     #[test]

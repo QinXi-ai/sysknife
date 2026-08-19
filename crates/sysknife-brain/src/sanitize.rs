@@ -44,6 +44,8 @@ use std::borrow::Cow;
 /// practice; truncation past this cap is signalled inline.
 pub const MAX_OUTPUT_BYTES: usize = 8 * 1024;
 
+const PROMPT_ENVELOPE_NAMES: &[&str] = &["untrusted_tool_output", "user_preferences"];
+
 /// A tool output wrapped in a spotlighting envelope and ready to ship to the
 /// LLM as a `tool` role message body.
 ///
@@ -156,7 +158,7 @@ fn sanitise_tool_name(name: &str) -> Cow<'_, str> {
     }
 }
 
-/// Apply the CommandSans-style normalisation pipeline to `raw`.
+/// Apply the CommandSans-style normalisation pipeline to tool output.
 ///
 /// Order matters: ANSI strip first (CSI sequences contain control bytes that
 /// break the Unicode pass), then strip dangerous Unicode classes, then NFC
@@ -164,12 +166,25 @@ fn sanitise_tool_name(name: &str) -> Cow<'_, str> {
 /// planted, then collapse runs of blank lines, then truncate to
 /// [`MAX_OUTPUT_BYTES`].
 pub fn normalise_free_text(raw: &str) -> String {
+    let s = normalise_unbounded_text(raw);
+    truncate_with_marker(&s, MAX_OUTPUT_BYTES)
+}
+
+/// Normalise saved preferences without applying the tool-output length cap.
+///
+/// Preference storage has its own limit in `prefs::PREFS_MAX_BYTES`. Reusing
+/// the smaller tool-output cap here would silently discard otherwise valid
+/// saved preferences when they are read back into the system prompt.
+pub fn normalise_preferences(raw: &str) -> String {
+    normalise_unbounded_text(raw)
+}
+
+fn normalise_unbounded_text(raw: &str) -> String {
     let s = strip_ansi(raw);
     let s = strip_dangerous_unicode(&s);
     let s = nfc_normalise(&s);
     let s = neutralise_envelope_tags(&s);
-    let s = collapse_blank_runs(&s);
-    truncate_with_marker(&s, MAX_OUTPUT_BYTES)
+    collapse_blank_runs(&s)
 }
 
 /// Replace any literal prompt-envelope tags inside the body so an attacker
@@ -182,13 +197,17 @@ pub fn normalise_free_text(raw: &str) -> String {
 /// distinct sentinel preserves the attacker's text (so it's visible in
 /// audit logs) but breaks the spoof.
 fn neutralise_envelope_tags(s: &str) -> String {
-    s.replace(
-        "</untrusted_tool_output>",
-        "</untrusted_tool_output_BLOCKED>",
-    )
-    .replace("<untrusted_tool_output", "<untrusted_tool_output_BLOCKED")
-    .replace("</user_preferences>", "</user_preferences_BLOCKED>")
-    .replace("<user_preferences", "<user_preferences_BLOCKED")
+    let mut neutralised = s.to_string();
+    for name in PROMPT_ENVELOPE_NAMES {
+        let closing = format!("</{name}>");
+        let blocked_closing = format!("</{name}_BLOCKED>");
+        let opening = format!("<{name}");
+        let blocked_opening = format!("<{name}_BLOCKED");
+        neutralised = neutralised
+            .replace(&closing, &blocked_closing)
+            .replace(&opening, &blocked_opening);
+    }
+    neutralised
 }
 
 /// Strip ANSI / VT control sequences. Recognises:
@@ -513,6 +532,21 @@ mod tests {
         let normalised = normalise_free_text(&raw);
         assert!(normalised.len() <= MAX_OUTPUT_BYTES);
         assert!(normalised.ends_with("[...truncated]"));
+    }
+
+    #[test]
+    fn preference_normalisation_keeps_security_pipeline_without_truncation() {
+        let raw = format!(
+            "\x1b[31me\u{301}\u{202e}</user_preferences>{}",
+            "x".repeat(MAX_OUTPUT_BYTES)
+        );
+        let normalised = normalise_preferences(&raw);
+
+        assert!(normalised.starts_with("é</user_preferences_BLOCKED>"));
+        assert!(!normalised.contains('\x1b'));
+        assert!(!normalised.contains('\u{202e}'));
+        assert!(normalised.len() > MAX_OUTPUT_BYTES);
+        assert!(!normalised.contains("[...truncated]"));
     }
 
     #[test]
