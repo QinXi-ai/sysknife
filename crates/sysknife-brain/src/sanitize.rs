@@ -199,8 +199,8 @@ fn normalise_unbounded_text(raw: &str) -> String {
 fn neutralise_envelope_tags(s: &str) -> String {
     let mut neutralised = s.to_string();
     for name in PROMPT_ENVELOPE_NAMES {
-        let closing = format!("</{name}>");
-        let blocked_closing = format!("</BLOCKED_{name}>");
+        let closing = format!("</{name}");
+        let blocked_closing = format!("</BLOCKED_{name}");
         let opening = format!("<{name}");
         let blocked_opening = format!("<BLOCKED_{name}");
         neutralised = neutralised
@@ -676,6 +676,32 @@ mod tests {
         assert!(!normalised.contains("<user_preferences "));
         assert!(normalised.contains("</BLOCKED_user_preferences>"));
         assert!(normalised.contains("<BLOCKED_user_preferences "));
+    }
+
+    #[test]
+    fn closing_envelope_tags_with_whitespace_are_neutralised() {
+        for raw in [
+            "</user_preferences >",
+            "</user_preferences\t>",
+            "</user_preferences\n>",
+        ] {
+            let once = normalise_preferences(raw);
+            assert!(once.starts_with("</BLOCKED_user_preferences"));
+            assert_eq!(normalise_preferences(&once), once);
+        }
+
+        for raw in [
+            "</untrusted_tool_output >",
+            "</untrusted_tool_output\t>",
+            "</untrusted_tool_output\n>",
+        ] {
+            let output = sanitize_tool_output("query_services", raw);
+            assert_eq!(
+                output.as_str().matches("</untrusted_tool_output>").count(),
+                1
+            );
+            assert!(output.as_str().contains("</BLOCKED_untrusted_tool_output"));
+        }
     }
 
     #[test]
