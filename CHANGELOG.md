@@ -23,6 +23,37 @@ Releases before `0.2.5` predate the public launch; their notes live in the
 
 ### Fixed
 
+- **`sysknife audit verify` no longer lets an inconclusive anchor hide a broken
+  chain.** The command combined the local audit result with the configured
+  external anchor using `.max()` on their exit codes. Exit 1 means a break was
+  detected and exit 2 means a check could not reach a verdict, so numeric
+  ordering put "could not determine" above "this has been tampered with": a
+  broken chain whose anchor database was unreachable exited 2. A script that
+  treats 2 as a soft warning and 1 as an alert routed a real tamper event to the
+  wrong branch. Precedence is now explicit, and `--json` derives its `status`
+  from the same combined result rather than from the local check alone, so a
+  truncated anchor over an otherwise intact chain reports `broken` instead of
+  `intact`. ([#221](https://github.com/lacs-project/sysknife/issues/221), thanks
+  to [@k4its1t](https://github.com/k4its1t))
+
+## [0.12.0] — 2026-09-03
+
+The middle digit moves because of [#334](https://github.com/lacs-project/sysknife/pull/334).
+The daemon now binds a transaction to the account that created it, and refuses
+two calls that used to succeed: one account acting on another account's
+transaction, and an `Unattributed` peer acting on its own. No signature changed,
+and [docs/release.md](docs/release.md#version-numbering) counts a behaviour
+change a caller relied on as a break, with v0.9.0 as the precedent.
+
+If you run `sysknife approve` in a terminal after an MCP preview, nothing
+changes. The daemon compares accounts rather than connections, and both halves
+of that flow run as your uid.
+
+Three changes, two of them from outside contributors. The authorization fix is
+the reason to upgrade.
+
+### Fixed
+
 - **A story suite that proved nothing no longer reports success.** All three
   runners (`run-stories.sh`, `exec/run-exec-stories.sh`, `dev-stories.sh`)
   decided their exit status from `fail_count` alone, so a run where every story
@@ -38,6 +69,21 @@ Releases before `0.2.5` predate the public launch; their notes live in the
   gates, so a reverted fix turns the suite red. Story 28 also left the
   no-argument default sets, which selected a Fedora-only story on every Ubuntu
   host. ([#247](https://github.com/lacs-project/sysknife/issues/247))
+
+- **A manually created socket directory now gets the mode the package
+  declares.** `bind_unix_listener` creates a missing parent for the socket path,
+  and it created it with whatever the process umask gave, so a daemon started by
+  hand could sit behind a directory more permissive than the `0750` that
+  `packaging/sysknife-tmpfiles.conf` sets under systemd. It now sets `0750` on a
+  directory it created, and leaves an existing one alone: an operator who put
+  the socket in their own `0700` directory keeps that mode rather than having it
+  widened. `tests/e2e/ubuntu-provision.sh` derives the expected runtime and
+  state directory modes from the tmpfiles config and asserts the live modes on
+  `/run/sysknife` and `/var/lib/sysknife` immediately after systemd starts the
+  daemon, which is the only point where the mode a running daemon has is a
+  different question from the mode a file declares.
+  ([#269](https://github.com/lacs-project/sysknife/issues/269), thanks to
+  [@ITSMERNB](https://github.com/ITSMERNB))
 
 ### Security
 

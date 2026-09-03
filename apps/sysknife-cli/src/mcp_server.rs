@@ -20,6 +20,9 @@
 //! The three fixed read-only tools and generated direct-query tools are safe to
 //! call without going through the plan/approve/execute loop — they only inspect
 //! state. Observer-callable mutations such as `AptUpdate` are never generated.
+//! Direct-query schemas remain open at the MCP layer deliberately: the daemon is
+//! authoritative for typed parameter validation, avoiding a second schema copy
+//! that could drift.
 //!
 //! The server uses stdio transport so any MCP client (Claude Desktop,
 //! Cursor, …) can launch it as a local subprocess.
