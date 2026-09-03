@@ -1875,7 +1875,7 @@ mod tests {
         assert!(!ubuntu_names.contains("sysknife_get_system_state"));
         assert!(!ubuntu_names.contains("sysknife_apt_update"));
 
-        let fedora = DistroId::Fedora { version: 41 };
+        let fedora = DistroId::FedoraSilverblue { version: 41 };
         let fedora_names: std::collections::HashSet<String> =
             direct_read_only_tool_router(Some(&fedora))
                 .list_all()
