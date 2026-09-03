@@ -130,6 +130,45 @@ fn audit_verify_exits_with_code_2_when_the_key_file_is_missing() {
         .code(2);
 }
 
+#[test]
+fn audit_verify_exit_code_prefers_broken_chain_to_inconclusive_anchor() {
+    let dir = tempfile::tempdir().expect("create CLI fixture directory");
+    let db_path = dir.path().join("daemon.sqlite");
+    let key =
+        AuditKey::load_or_generate(&dir.path().join("audit-key")).expect("generate audit key");
+    let store = TransactionStore::open_with_key(&db_path, Arc::new(key.clone()))
+        .expect("create audit store");
+    store
+        .record(NewTransaction {
+            request_id: "broken-chain-exit-code".to_string(),
+            request_hash: "broken-chain-exit-code-hash".to_string(),
+            action_name: "UpdateSystem".to_string(),
+            risk_level: RiskLevel::High,
+            summary: "Upgrade the system".to_string(),
+            warnings: vec![],
+            caller_role: CallerRole::Dev,
+            caller_principal: CallerPrincipal::Uid(1000),
+        })
+        .expect("record audit row");
+    drop(store);
+
+    let wrong_key_path = dir.path().join("wrong-audit-key");
+    let wrong_key = AuditKey::load_or_generate(&wrong_key_path).expect("generate mismatched key");
+    assert_ne!(key.verifying_key_hex(), wrong_key.verifying_key_hex());
+
+    cli()
+        .env("SYSKNIFE_DATABASE_PATH", &db_path)
+        .env("SYSKNIFE_CHECKPOINT_DB", "not-a-postgres-url")
+        .env("HOME", dir.path())
+        .env("XDG_CONFIG_HOME", dir.path())
+        .args(["audit", "verify", "--pubkey"])
+        .arg(dir.path().join("wrong-audit-key.pub"))
+        .assert()
+        // The wrong public key makes the local chain Broken (1), while the
+        // unusable configured anchor is CannotVerify (2). A break must win.
+        .code(1);
+}
+
 #[tokio::test]
 #[ignore = "live Postgres; set SYSKNIFE_TEST_POSTGRES_URL and run with --ignored"]
 async fn audit_verify_exits_with_code_1_when_anchor_is_truncated() {
