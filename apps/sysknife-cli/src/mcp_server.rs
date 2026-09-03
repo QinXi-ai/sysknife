@@ -1897,6 +1897,18 @@ mod tests {
         assert!(unknown_names.contains("sysknife_get_disk_usage"));
         assert!(!unknown_names.contains("sysknife_apt_search"));
         assert!(!unknown_names.contains("sysknife_get_system_state"));
+
+        let read_only_names: std::collections::HashSet<String> = MCP_READ_ONLY_ACTIONS
+            .iter()
+            .map(|action| direct_action_tool_name(action))
+            .collect();
+        for routed_names in [&ubuntu_names, &fedora_names, &unknown_names] {
+            let unexpected: Vec<_> = routed_names.difference(&read_only_names).collect();
+            assert!(
+                unexpected.is_empty(),
+                "approval-free router exposed tools outside MCP_READ_ONLY_ACTIONS: {unexpected:?}"
+            );
+        }
     }
 
     // -----------------------------------------------------------------------
