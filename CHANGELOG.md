@@ -12,6 +12,15 @@ Releases before `0.2.5` predate the public launch; their notes live in the
 
 ## [Unreleased]
 
+### Added
+
+- **MCP clients can query live system state without an LLM planning round trip.**
+  Observer-callable actions now receive distro-compatible direct tools generated
+  from the catalogue, with read-only MCP annotations and the daemon's existing
+  policy and platform fences. The explicit classification is drift-tested:
+  `AptUpdate` remains plan-only because refreshing root's apt index mutates the
+  host despite its Low risk level. ([#216](https://github.com/lacs-project/sysknife/issues/216))
+
 ### Fixed
 
 - **`sysknife audit verify` no longer lets an inconclusive anchor hide a broken
