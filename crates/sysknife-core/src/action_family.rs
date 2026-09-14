@@ -358,8 +358,8 @@ mod tests {
             assert!(action_matches_distro(action, &debian), "{action}");
         }
         assert!(
-            !debian.is_supported(),
-            "classification must not enable Debian"
+            !derivative.is_supported(),
+            "Debian-family membership must not enable an unrecognised derivative"
         );
     }
 }

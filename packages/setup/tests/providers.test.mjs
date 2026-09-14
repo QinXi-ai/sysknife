@@ -77,7 +77,7 @@ test('all eight model defaults match the engine defaults', () => {
   assert.equal(MODEL_DEFAULTS.anthropic, 'claude-sonnet-4-6');
   assert.equal(MODEL_DEFAULTS.gemini, 'gemini-2.0-flash');
   assert.equal(MODEL_DEFAULTS.ollama, 'qwen3:8b');
-  assert.equal(MODEL_DEFAULTS.groq, 'llama-3.3-70b-versatile');
+  assert.equal(MODEL_DEFAULTS.groq, 'openai/gpt-oss-120b');
   assert.equal(MODEL_DEFAULTS.deepseek, 'deepseek-chat');
   assert.equal(MODEL_DEFAULTS.mistral, 'mistral-large-latest');
   assert.equal(MODEL_DEFAULTS.xai, 'grok-3');

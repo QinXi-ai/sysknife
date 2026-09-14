@@ -433,7 +433,7 @@ the daemon.
 | `ANTHROPIC_API_KEY` | Use the Anthropic provider (default model: `claude-sonnet-4-6`) |
 | `OPENAI_API_KEY` | Use the OpenAI provider (default model: `gpt-4.1`) |
 | `GEMINI_API_KEY` | Use the Gemini provider (default model: `gemini-2.0-flash`) |
-| `GROQ_API_KEY` | Use the Groq provider (default model: `llama-3.3-70b-versatile`) |
+| `GROQ_API_KEY` | Use the Groq provider (default model: `openai/gpt-oss-120b`) |
 | `DEEPSEEK_API_KEY` | Use the DeepSeek provider (default model: `deepseek-chat`) |
 | `MISTRAL_API_KEY` | Use the Mistral provider (default model: `mistral-large-latest`) |
 | `XAI_API_KEY` | Use the xAI provider (default model: `grok-3`) |

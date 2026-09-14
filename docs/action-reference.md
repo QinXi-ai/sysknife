@@ -340,8 +340,8 @@ Every row is derived from the live code: the command from each action's `ActionS
 | `UfwAllow` | `sudo ufw allow 22` | High | Ubuntu | – | – | allow inbound traffic on a port or service — param: port_or_service\* (e.g. 22, 22/tcp, OpenSSH); Ubuntu only; High risk |
 | `UfwDeny` | `sudo ufw deny 23` | High | Ubuntu | – | – | deny inbound traffic on a port or service — param: port_or_service\*; Ubuntu only; High risk |
 | `UfwReset` | `sudo ufw --force reset` | High | Ubuntu | – | – | reset ufw to defaults, removing all rules — no params; Ubuntu only; High risk; irreversible |
-| `UfwStatus` | `sudo ufw status verbose` | Low | Ubuntu | – | – | show current ufw status and rules — no params; Ubuntu only; read-only |
-| `UfwDeleteRule` | `sudo ufw --force delete 1` | High | Ubuntu | – | – | delete a ufw rule by number — param: rule_number\* (positive integer from 'ufw status numbered'); Ubuntu only; High risk |
+| `UfwStatus` | `sudo ufw status verbose` | Low | Ubuntu | – | – | show current ufw status and rules — optional param: numbered (boolean, default false); true runs ufw status numbered and exposes rule_number values for UfwDeleteRule, false keeps verbose status; read-only |
+| `UfwDeleteRule` | `sudo ufw --force delete 1` | High | Ubuntu | – | – | delete a ufw rule by number — param: rule_number\* (positive integer from query_ufw_rules or UfwStatus with numbered=true); never guess a rule number, and refresh after rule changes; High risk |
 | `UfwLimit` | `sudo ufw limit 22` | High | Ubuntu | – | – | add rate-limiting rule on a port/service (&gt;6 connections/30s blocked) — param: target\* (e.g. '22' or 'ssh'); Ubuntu only; High risk; use for SSH brute-force mitigation |
 
 ## netplan

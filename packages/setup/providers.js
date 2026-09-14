@@ -37,7 +37,7 @@ const MODEL_DEFAULTS = {
   anthropic:'claude-sonnet-4-6',
   gemini:   'gemini-2.0-flash',
   ollama:   'qwen3:8b',
-  groq:     'llama-3.3-70b-versatile',
+  groq:     'openai/gpt-oss-120b',
   deepseek: 'deepseek-chat',
   mistral:  'mistral-large-latest',
   xai:      'grok-3',

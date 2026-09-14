@@ -27,6 +27,11 @@ longer require distro detection after leaving the hard lists. This widens
 read-only inspection; mutations still require an eligible host, and the
 Low-risk mutating `AptUpdate` remains hard-fenced.
 
+Ubuntu Core is not an eligible host. Its Debian family tag does not make apt
+available: the planner limits its catalogue to actions outside the shared
+host-policy predicate, as it does for an unknown family. This does not claim
+Ubuntu Core execution support.
+
 The MCP surface uses the same routing checks and withholds hard-restricted actions when
 detection fails. The planner receives an explicit distribution ID alongside the
 family; display text never grants Ubuntu capabilities.

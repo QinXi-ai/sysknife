@@ -58,6 +58,8 @@ def main():
     if len(sys.argv) != 1:
         print("firewall-state accepts no arguments", file=sys.stderr)
         return 2
+    # Resolve nft through sudo's secure_path. If /usr/sbin is unavailable there,
+    # the failed probe deliberately produces unknown, never an unfiltered claim.
     result = summarize(probe(["sudo", "-n", "nft", "-j", "list", "ruleset"]),
                        probe(["sudo", "-n", "ufw", "status", "verbose"]),
                        probe(["firewall-cmd", "--list-all"]))

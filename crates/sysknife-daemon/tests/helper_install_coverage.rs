@@ -203,6 +203,13 @@ fn every_referenced_helper_has_a_sudoers_grant() {
     for helper in referenced_helpers() {
         let expected = format!("/usr/lib/sysknife/{helper}");
         if helper == "firewall-state" {
+            assert!(
+                !sudoers
+                    .lines()
+                    .filter(|line| !line.trim_start().starts_with('#'))
+                    .any(|line| line.contains(&expected)),
+                "{expected} must have NO sudoers grant: the reporter must not be root-callable"
+            );
             // This reporter runs as the daemon user; only its fixed probe
             // commands have sudo grants. Do not grant the whole helper root.
             use sysknife_daemon::actions::{all_specs, ActionMechanism};

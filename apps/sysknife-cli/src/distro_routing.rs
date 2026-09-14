@@ -211,7 +211,8 @@ mod tests {
             "AptUpdate",
         ] {
             for distro in [
-                DistroId::Debian { version: Some(13) },
+                DistroId::Debian { version: Some(11) },
+                DistroId::Debian { version: None },
                 DistroId::Ubuntu {
                     major: 18,
                     minor: 4,
@@ -229,13 +230,15 @@ mod tests {
                 );
             }
             for distro in [
+                DistroId::Debian { version: Some(12) },
+                DistroId::Debian { version: Some(13) },
                 DistroId::Ubuntu {
                     major: 24,
                     minor: 4,
                 },
                 DistroId::FedoraSilverblue { version: 41 },
             ] {
-                if action != "AptUpdate" {
+                if action != "AptUpdate" || matches!(distro, DistroId::Debian { .. }) {
                     assert!(
                         check_action_distro(action, Some(&distro)).is_ok(),
                         "portable {action} must remain usable on {distro}"

@@ -361,7 +361,7 @@ this is runtime status, NOT the saved configuration; on Ubuntu the saved config 
     ("UfwReset",
      "reset ufw to defaults, removing all rules — no params; Ubuntu only; High risk; irreversible"),
     ("UfwStatus",
-     "show current ufw status and rules — no params; Ubuntu only; read-only"),
+     "show current ufw status and rules — optional param: numbered (boolean, default false); true runs ufw status numbered and exposes rule_number values for UfwDeleteRule, false keeps verbose status; read-only"),
     // ── Ubuntu / distrobox — container environment ────────────────────────────
     ("DistroboxList",
      "list distrobox containers — no params; Ubuntu only; read-only"),
@@ -438,7 +438,7 @@ reports live interface state"),
      "regenerate netplan backend config without applying — no params; Ubuntu only; Medium risk; dry-run before NetplanApply"),
     // ── Ubuntu / Tier 3 — ufw extensions ─────────────────────────────────────
     ("UfwDeleteRule",
-     "delete a ufw rule by number — param: rule_number* (positive integer from 'ufw status numbered'); Ubuntu only; High risk"),
+     "delete a ufw rule by number — param: rule_number* (positive integer from query_ufw_rules or UfwStatus with numbered=true); never guess a rule number, and refresh after rule changes; High risk"),
     ("UfwLimit",
      "add rate-limiting rule on a port/service (>6 connections/30s blocked) — param: target* (e.g. '22' or 'ssh'); Ubuntu only; High risk; use for SSH brute-force mitigation"),
     // ── Ubuntu / Tier 3 — release upgrade ────────────────────────────────────
@@ -483,6 +483,11 @@ reports live interface state"),
 fn available_on(action: &str, hint: Option<&sysknife_types::DistroHint>) -> bool {
     let family = hint.map(|hint| hint.family);
     if let Some(hint) = hint {
+        // Ubuntu Core is immutable and is not an eligible Debian host. Do not
+        // offer apt (or other host-policy actions) merely from its family tag.
+        if hint.id == "ubuntu-core" {
+            return !action_requires_supported_host(action);
+        }
         if hint.id != "ubuntu" && UBUNTU_ONLY_ACTIONS.contains(&action) {
             return false;
         }
@@ -739,6 +744,20 @@ mod tests {
 
     #[test]
     fn debian_host_does_not_inherit_ubuntu_tools_or_preferences() {
+        let core = sysknife_types::DistroHint {
+            id: "ubuntu-core".into(),
+            family: DISTRO_FAMILY_DEBIAN,
+            version: Some("24".into()),
+        };
+        let core_def = propose_plan_tool_def(Some(&core));
+        let core_actions = offered_actions(&core_def);
+        for (action, _) in KNOWN_ACTIONS {
+            assert_eq!(
+                core_actions.contains(&action.to_string()),
+                !action_requires_supported_host(action),
+                "Ubuntu Core: {action}"
+            );
+        }
         let hint = sysknife_types::DistroHint {
             id: "debian".into(),
             family: DISTRO_FAMILY_DEBIAN,

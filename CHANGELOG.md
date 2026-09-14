@@ -12,11 +12,22 @@ Releases before `0.2.5` predate the public launch; their notes live in the
 
 ## [Unreleased]
 
-### Changed
+### Added
 
 - Add read-only nftables ruleset and firewall-backend observations. General
   firewall queries preserve failed/unknown probes and do not equate inactive
   ufw with an unfiltered host; mutating nftables actions remain out of scope (#239).
+
+## [0.15.0] — 2026-09-10
+
+### Changed
+
+- Make Debian stable releases 12 and later eligible, while refusing an unknown
+  version and releases below the security-support floor. Debian eligibility is
+  separate from live-VM validation; Ubuntu-only actions remain excluded (#238).
+- Let `UfwStatus` return numbered rules with `numbered: true`, retaining verbose
+  output by default. Add `query_ufw_rules` so the planner can read the indices
+  required by `UfwDeleteRule` instead of guessing them (#234).
 - Separate Ubuntu identity requirements from Debian-family mechanisms and
   planner defaults. Canonical services, PPAs and the reboot sentinel require
   Ubuntu itself; portable tools are no longer refused merely for being another
@@ -32,6 +43,37 @@ Releases before `0.2.5` predate the public launch; their notes live in the
 
 ### Fixed
 
+- The default Groq model is `openai/gpt-oss-120b`. Groq decommissioned
+  `llama-3.3-70b-versatile`, so every SysKnife user on the Groq provider who had
+  not overridden `SYSKNIFE_LLM_MODEL` was getting an HTTP 404 from the planner.
+  Found by running the planner against the live API rather than a cassette:
+
+  ```
+  llama-3.3-70b-versatile      HTTP 404   model_not_found
+  openai/gpt-oss-120b          HTTP 200
+  ```
+
+  The replacement was chosen by running SysKnife's real prompt and tool schema
+  against it: a three-part read-only intent planned `GetDiskUsage`,
+  `GetMemoryInfo` and `ListServices` with no query preamble, and a Debian 12
+  host planned `AptInstall` with no Ubuntu-only action offered. All seven
+  reference sites move together, which `tests/e2e/provider-parity.test.sh`
+  enforces.
+
+- Sanitise the distro version string before it reaches the prompt header. A
+  crafted `/etc/os-release` could put tag syntax into the version and open a
+  second `<user_preferences>` envelope around the constraints, risk tables and
+  params blocks that follow it. Both the Fedora and the Debian renderer
+  interpolate that value and both now route it through `normalise_free_text`
+  (#272).
+
+- `check_no_secrets.sh --staged` fails closed when git cannot answer. The
+  pre-commit credential scanner built its file list through process
+  substitution, which `set -euo pipefail` cannot see into, so a failing
+  `git diff --cached` left the loop with nothing to do and the scanner exited 0
+  having read no bytes. A staged blob git cannot read now stops the commit with
+  its own message instead of the credential-found banner, and an honest empty
+  staged set still passes in silence (#406).
 - Attach the default safety audit log in `LlmPlanner::from_config`, the
   construction path the CLI, the MCP server and the shell all take. Fence
   rejections were built and tested and never written anywhere, so a rejected

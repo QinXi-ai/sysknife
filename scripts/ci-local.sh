@@ -236,12 +236,22 @@ hygiene_markdownlint() (
 
 hygiene_markdown_link_check() (
     cd "$repo_root" || exit 1
+    file_list="$(mktemp)"
+    trap 'rm -f "$file_list"' EXIT
+    scripts/markdown-link-files.sh > "$file_list" || exit 1
+    count=0
     while IFS= read -r -d '' f; do
         markdown-link-check --config .markdown-link-check-internal.json "$f" || exit 1
-    done < <(scripts/markdown-link-files.sh)
+        count=$((count + 1))
+    done < "$file_list"
+    [[ "$count" -gt 0 ]] || { printf 'markdown-link-files: no files checked\n' >&2; exit 1; }
+    scripts/markdown-link-files.sh --external > "$file_list" || exit 1
+    count=0
     while IFS= read -r -d '' f; do
         markdown-link-check --config .markdown-link-check.json "$f" || exit 1
-    done < <(scripts/markdown-link-files.sh --external)
+        count=$((count + 1))
+    done < "$file_list"
+    [[ "$count" -gt 0 ]] || { printf 'markdown-link-files: no files checked\n' >&2; exit 1; }
 )
 
 hygiene_yamllint() (
@@ -272,6 +282,7 @@ run_hygiene_group() {
     run_step 'hygiene: release-rehearsal.test.sh' bash "$repo_root/tests/release/release-rehearsal.test.sh"
     run_step 'hygiene: database-path-agreement.test.sh' bash "$repo_root/tests/release/database-path-agreement.test.sh"
     run_step 'hygiene: node-eol.test.sh' bash "$repo_root/tests/release/node-eol.test.sh"
+    run_step 'hygiene: tracked-eol.test.sh' bash "$repo_root/tests/release/tracked-eol.test.sh"
     run_step 'hygiene: systemd-directory-modes.test.sh' bash "$repo_root/tests/release/systemd-directory-modes.test.sh"
     run_step 'hygiene: ubuntu-vm-bootstrap.test.sh' bash "$repo_root/tests/e2e/ubuntu-vm-bootstrap.test.sh"
     run_step 'hygiene: provider-parity.test.sh' bash "$repo_root/tests/e2e/provider-parity.test.sh"
