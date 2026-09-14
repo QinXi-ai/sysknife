@@ -12,6 +12,12 @@ Releases before `0.2.5` predate the public launch; their notes live in the
 
 ## [Unreleased]
 
+### Fixed
+
+- Align planner action descriptions with the Ubuntu execution fence, including
+  Ufw and the other tool families moved to shared or Debian-family support.
+  Guard both directions of the description/fence relationship (#416).
+
 ## [0.15.0] — 2026-09-10
 
 ### Changed
