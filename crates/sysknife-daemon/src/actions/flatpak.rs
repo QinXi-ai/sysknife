@@ -19,11 +19,11 @@ pub fn specs() -> Vec<ActionSpec> {
     ]
 }
 
-/// Run a Flatpak command as the target user via `sudo runuser -u user -- flatpak <argv>`.
+/// Run a fixed Flatpak operation after the helper drops to the target user.
 ///
 /// Flatpak user installations live under `~/.local/share/flatpak/` and are
 /// accessed through the user's D-Bus session. The daemon runs as `sysknife`
-/// (a system user) with no user installation; `runuser -u` switches to the
+/// (a system user) with no user installation; the helper switches to the
 /// correct user UID without spawning a login shell, so each argv element is
 /// passed to `flatpak` verbatim.
 ///
@@ -37,11 +37,9 @@ pub fn specs() -> Vec<ActionSpec> {
 /// shell metacharacters.
 fn flatpak_as(username: &str, args: &[&str]) -> ActionMechanism {
     let mut argv: Vec<String> = vec![
-        "runuser".to_string(),
-        "-u".to_string(),
-        username.to_string(),
-        "--".to_string(),
+        "/usr/lib/sysknife/action-steps".to_string(),
         "flatpak".to_string(),
+        username.to_string(),
     ];
     argv.extend(args.iter().map(|s| s.to_string()));
     ActionMechanism::Command {

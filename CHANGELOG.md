@@ -12,6 +12,14 @@ Releases before `0.2.5` predate the public launch; their notes live in the
 
 ## [Unreleased]
 
+### Changed
+
+- Remove whole-binary shell and runuser sudo grants. Firewall, group, Snap,
+  SSH-key and user-scoped Flatpak/Podman/Toolbox operations now use a bounded
+  helper with fixed command grammars. User operations refuse UID 0 and drop
+  groups/GID/UID before file access or execution; SSH edits reject symlinks.
+  Install the new helper together with the daemon and sudoers fragment (#417).
+
 ## [0.15.0] — 2026-09-10
 
 ### Changed

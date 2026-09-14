@@ -105,6 +105,14 @@ fn every_sudo_action_is_authorised_by_a_packaged_grant() {
             if *program != "sudo" {
                 continue;
             }
+            assert!(
+                !args.iter().take(1).any(|arg| matches!(
+                    arg.rsplit('/').next(),
+                    Some("sh" | "bash" | "dash" | "runuser")
+                )),
+                "{} must use bounded argv instead of a privileged shell/user launcher",
+                spec.action_name
+            );
             if !grants.iter().any(|g| grant_allows(g, args)) {
                 unauthorised.push(format!("{}: sudo {}", spec.action_name, args.join(" ")));
             }

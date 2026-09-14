@@ -1,24 +1,11 @@
 //! Execution correctness tests for AddAuthorizedKey and RemoveAuthorizedKey.
 //!
-//! Both actions use `sh -c` scripts composed at runtime. The unit tests in
-//! `actions_batch*.rs` prove the scripts are *constructed* correctly (right
-//! program, right template). These tests prove the scripts *execute* correctly:
-//!
-//!   AddAuthorizedKey  — idempotent append via `grep -Fxq … || printf … >>`
-//!   RemoveAuthorizedKey — exact-line deletion via `grep -Fxv` into a temp
-//!                         file copied back over the original
-//!
-//! Both scripts take the key and path as positional arguments, so no caller
-//! value is ever parsed as shell syntax or as a regular expression. The
-//! literal-not-pattern test below is the regression guard for the earlier
-//! `sed`-based removal, which let `ssh-ed25519 .*` wipe the whole file.
-//!
-//! Technique: call the real `ssh::add_authorized_key` / `ssh::remove_authorized_key`
-//! functions to build the ActionSpec, then redirect the path inside the generated
-//! shell script from `/home/testuser/.ssh/authorized_keys` to a tempfile. This
-//! tests the actual production script without touching the real filesystem.
-//!
-//! Requirements: sh, grep, sed (standard on any Linux — available in CI).
+//! The production helper edits literal whole lines, retaining inode and mode.
+//! These tests call its real edit function on temporary files through the real
+//! executor, with operation/key arguments taken from the generated ActionSpec.
+//! Credential dropping is tested separately in action-steps.test.sh, including
+//! a root subprocess that cannot regain root or write through a planted symlink.
+//! Requirements: Python 3 and Linux filesystem semantics.
 
 use sysknife_daemon::actions::{ssh, ActionMechanism};
 use sysknife_daemon::executor::execute_spec;
@@ -47,41 +34,34 @@ const WILDCARD_KEY: &str = "ssh-ed25519 .*";
 /// Build an ActionSpec for `add_authorized_key` or `remove_authorized_key` that
 /// operates on `temp_path` instead of the real `/home/{USERNAME}/.ssh/authorized_keys`.
 ///
-/// The production functions use `sudo sh -c` so the daemon (running as the sysknife
-/// system user) can write to files owned by the target user. In tests, we strip the
-/// `sudo` prefix and run as the current user against a tempfile — no elevated privileges
-/// needed, and the script logic is still fully exercised.
+/// The fixture invokes the packaged helper's edit function without privilege,
+/// retaining the generated operation and key. No production test-path override
+/// or generic command mode is exposed by the installed helper.
 fn redirect_spec_path(
     mut spec: sysknife_daemon::actions::ActionSpec,
     temp_path: &str,
 ) -> sysknife_daemon::actions::ActionSpec {
-    let real_path = format!("/home/{USERNAME}/.ssh/authorized_keys");
     if let ActionMechanism::Command {
         ref mut program,
         ref mut args,
         ..
     } = spec.mechanism
     {
-        // The production form is `sudo runuser -u <user> -- sh -c <script> ...`,
-        // which runs the write as the target user (the symlink-escalation fix).
-        // Strip the `sudo runuser -u <user> --` prefix down to the inner `sh`
-        // so the test can run it unprivileged as the current user.
-        if *program == "sudo"
-            && args.first().map(String::as_str) == Some("runuser")
-            && args.get(3).map(String::as_str) == Some("--")
-        {
-            *program = "sh";
-            args.drain(0..5); // runuser -u <user> -- sh  → leaves -c <script> ...
-        } else if *program == "sudo" && args.first().map(String::as_str) == Some("sh") {
-            // Older direct form, kept so this helper survives either shape.
-            *program = "sh";
-            args.remove(0);
-        }
-        for arg in args.iter_mut() {
-            if arg.contains(&real_path) {
-                *arg = arg.replace(&real_path, temp_path);
-            }
-        }
+        assert_eq!(*program, "sudo");
+        assert_eq!(args[0], "/usr/lib/sysknife/action-steps");
+        assert!(matches!(args[1].as_str(), "ssh-add" | "ssh-remove"));
+        assert_eq!(args[2], USERNAME);
+        assert_eq!(args.len(), 4);
+        let helper = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../packaging/sysknife-action-steps");
+        // Exercise the real edit function as the current unprivileged test user.
+        // Separate helper tests execute and verify the production privilege drop.
+        let operation = args[1].clone();
+        let key = args[3].clone();
+        *program = "python3";
+        *args = vec!["-c".into(),
+            "import runpy,sys; m=runpy.run_path(sys.argv[1]); m['edit_key'](sys.argv[2],sys.argv[3],sys.argv[4]=='ssh-add')".into(),
+            helper.to_string_lossy().into_owned(), temp_path.into(), key, operation];
     }
     spec
 }
@@ -336,8 +316,16 @@ fn key_edits_drop_to_the_target_user() {
         };
         assert_eq!(*program, "sudo", "{}", spec.action_name);
         assert_eq!(
-            &args[0..4],
-            &["runuser", "-u", USERNAME, "--"],
+            &args[0..3],
+            &[
+                "/usr/lib/sysknife/action-steps",
+                if spec.action_name == "AddAuthorizedKey" {
+                    "ssh-add"
+                } else {
+                    "ssh-remove"
+                },
+                USERNAME
+            ],
             "{} must run as {USERNAME}, not root; got {args:?}",
             spec.action_name
         );
