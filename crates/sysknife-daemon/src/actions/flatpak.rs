@@ -27,14 +27,9 @@ pub fn specs() -> Vec<ActionSpec> {
 /// correct user UID without spawning a login shell, so each argv element is
 /// passed to `flatpak` verbatim.
 ///
-/// **Shell-injection safety:** unlike `runuser -l user -c "<shell-string>"`,
-/// the `-u user -- argv` form bypasses the shell entirely. There is no string
-/// interpolation, no metacharacter expansion, and no quoting concern — every
-/// argument reaches `flatpak(1)` exactly as supplied. Callers must still pass
-/// arguments through `validated_safe_arg`/`validated_username` upstream so a
-/// hostile value cannot impersonate a flag (`-X`) or break out of the
-/// command's own option parser, but they no longer have to defend against
-/// shell metacharacters.
+/// The helper independently allowlists the complete Flatpak argv grammar and
+/// rejects option-shaped values before dropping credentials and executing the
+/// fixed binary. Callers also validate values upstream; no shell parses them.
 fn flatpak_as(username: &str, args: &[&str]) -> ActionMechanism {
     let mut argv: Vec<String> = vec![
         "/usr/lib/sysknife/action-steps".to_string(),
@@ -166,7 +161,7 @@ pub fn get_flatpak_app_info(username: &str, app_id: &str) -> ActionSpec {
 // every Ubuntu wrapper delegates directly to the shared `flatpak_as` helper.
 // ---------------------------------------------------------------------------
 
-/// Install a Flatpak app on Ubuntu (`sudo runuser -u <user> -- flatpak install --user -y <remote> <app>`).
+/// Install a Flatpak app on Ubuntu through the bounded user-operation helper.
 ///
 /// Identical argv to `InstallFlatpak` on Fedora. Distinct action name for
 /// Ubuntu-specific routing in the daemon and LLM prompt.
@@ -182,7 +177,7 @@ pub fn ubuntu_install_flatpak(username: &str, app_id: &str, remote: &str) -> Act
     }
 }
 
-/// Remove a Flatpak app on Ubuntu (`sudo runuser -u <user> -- flatpak uninstall --user -y <app>`).
+/// Remove a Flatpak app on Ubuntu through the bounded user-operation helper.
 ///
 /// Risk: Medium. Uninstalls a sandboxed Flatpak application.
 pub fn ubuntu_remove_flatpak(username: &str, app_id: &str) -> ActionSpec {

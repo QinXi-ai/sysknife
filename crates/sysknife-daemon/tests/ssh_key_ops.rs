@@ -251,7 +251,7 @@ async fn remove_authorized_key_passes_key_only_as_fixed_helper_data() {
     let ActionMechanism::Command { program, args, .. } = &spec.mechanism else {
         panic!("remove_authorized_key must use a Command mechanism");
     };
-    assert_eq!(program, "sudo");
+    assert_eq!(*program, "sudo");
     assert_eq!(
         args,
         &[

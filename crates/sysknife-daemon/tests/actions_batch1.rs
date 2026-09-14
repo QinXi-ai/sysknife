@@ -82,9 +82,8 @@ fn flatpak_family_covers_install_remove_and_query_actions() {
 #[test]
 fn flatpak_install_routes_through_bounded_helper() {
     // InstallFlatpak must run as the target user (user-scoped Flatpak store).
-    // The daemon runs as `sysknife`; `sudo runuser -u <username> -- flatpak ...`
-    // switches to the correct UID and bypasses the shell entirely so each argv
-    // element is passed to flatpak verbatim (no metacharacter expansion).
+    // The daemon runs as `sysknife`; the fixed helper validates argv and drops
+    // credentials before executing Flatpak without a shell.
     let spec = flatpak::install_flatpak("testuser", "org.mozilla.firefox", "flathub");
 
     assert_eq!(spec.action_name, "InstallFlatpak");
@@ -123,8 +122,8 @@ fn toolbox_family_covers_create_enter_list_and_remove() {
 #[test]
 fn toolbox_create_routes_through_bounded_helper_with_xdg_runtime_dir() {
     // CreateToolbox must run as the target user (rootless Podman per-user).
-    // XDG_RUNTIME_DIR must be set explicitly because `runuser -l` does not
-    // trigger pam_systemd — without it toolbox fails to locate its Podman socket.
+    // The helper sets XDG_RUNTIME_DIR explicitly after dropping credentials;
+    // without it toolbox fails to locate its Podman socket.
     let spec = toolbox::create_toolbox("testuser", "sysknife-dev", Some("41"), None);
 
     assert_eq!(spec.action_name, "CreateToolbox");
