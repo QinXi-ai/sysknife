@@ -12,6 +12,12 @@ Releases before `0.2.5` predate the public launch; their notes live in the
 
 ## [Unreleased]
 
+### Fixed
+
+- Discover release/e2e shell guards in local CI instead of maintaining a stale
+  list. Report skipped required Postgres validation in the final summary and
+  prefer Podman when both container runtimes are available (#346).
+
 ## [0.15.0] — 2026-09-10
 
 ### Changed

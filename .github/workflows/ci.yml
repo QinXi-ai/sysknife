@@ -110,6 +110,9 @@ jobs:
       - name: Check postgres-contract still requires both job tokens
         run: bash tests/release/postgres-contract-guard.test.sh
 
+      - name: Check local gate discovery and required-check warnings
+        run: bash tests/release/ci-local.test.sh
+
       - name: Check the audit export states its confidentiality class
         run: bash tests/release/audit-export-confidentiality.test.sh
 
