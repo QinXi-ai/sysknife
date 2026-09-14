@@ -244,37 +244,28 @@ async fn remove_authorized_key_treats_the_key_as_a_literal_not_a_pattern() {
 }
 
 #[tokio::test]
-async fn remove_authorized_key_script_never_embeds_the_key_in_its_text() {
-    // Structural guard: the key must travel as a positional argument, never
-    // interpolated into the script body. If a future edit inlines it again,
-    // the quoting/metacharacter problem returns even if the behavioural test
-    // above happens to still pass for the specific payload it uses.
+async fn remove_authorized_key_passes_key_only_as_fixed_helper_data() {
+    // Guard the complete executable/argv contract: no shell or command text
+    // may be reintroduced, and the key is only the final data argument.
     let spec = ssh::remove_authorized_key(USERNAME, TEST_KEY);
-    let ActionMechanism::Command { args, .. } = &spec.mechanism else {
+    let ActionMechanism::Command { program, args, .. } = &spec.mechanism else {
         panic!("remove_authorized_key must use a Command mechanism");
     };
-    let script = args
-        .iter()
-        .find(|a| a.contains("grep") || a.contains("sed"))
-        .expect("script body must be present in argv");
-    assert!(
-        !script.contains(TEST_KEY),
-        "key must not be interpolated into the script body: {script:?}"
-    );
-    assert!(
-        !script.contains("sed"),
-        "removal must not build a sed address from caller data: {script:?}"
-    );
-    assert!(
-        args.iter().any(|a| a == TEST_KEY),
-        "key must be passed as its own argv element: {args:?}"
+    assert_eq!(program, "sudo");
+    assert_eq!(
+        args,
+        &[
+            "/usr/lib/sysknife/action-steps",
+            "ssh-remove",
+            USERNAME,
+            TEST_KEY
+        ]
     );
 }
 
 #[tokio::test]
 async fn remove_authorized_key_is_noop_when_key_absent() {
-    // `grep -Fxv` simply copies every line through when the key is absent —
-    // exit code 0, file unchanged.
+    // An absent literal line is a successful no-op.
     let dir = tempdir().unwrap();
     let keys_path = dir
         .path()
