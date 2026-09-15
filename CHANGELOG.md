@@ -16,7 +16,9 @@ Releases before `0.2.5` predate the public launch; their notes live in the
 
 - Add read-only nftables ruleset and firewall-backend observations. General
   firewall queries preserve failed/unknown probes and do not equate inactive
-  ufw with an unfiltered host; mutating nftables actions remain out of scope (#239).
+  ufw with an unfiltered host. Safety notes precede bounded diagnostic excerpts
+  so large rulesets retain valid JSON and the interpretation caveat within the
+  planner output cap; mutating nftables actions remain out of scope (#239).
 
 ## [0.15.0] — 2026-09-10
 

@@ -2,6 +2,7 @@
 import importlib.machinery
 import importlib.util
 import json
+import re
 from pathlib import Path
 import unittest
 
@@ -21,6 +22,48 @@ def nft(entries):
 
 
 class FirewallStateTests(unittest.TestCase):
+    def test_large_ruleset_keeps_summary_and_caveat_before_bounded_probes(self):
+        entries = [{"chain": {"hook": "forward", "policy": "drop"}}]
+        entries += [{"rule": {"comment": "forward rule " + "x" * 200}} for _ in range(120)]
+        original = nft(entries)
+        result = module.summarize(original, probe("Status: inactive"), probe(status="failed"))
+        payload = json.dumps(result)
+        self.assertLess(payload.index('"note"'), payload.index('"probes"'))
+        self.assertEqual(result["nftables"]["rule_count"], 120)
+        self.assertIn("nftables", result["backends_observed"])
+        self.assertIn("[truncated by firewall-state]", result["probes"]["nftables"]["stdout"])
+        self.assertEqual(json.loads(original["stdout"])["nftables"], entries)
+        self.assert_payload_survives_brain_cap(payload)
+
+    def assert_payload_survives_brain_cap(self, payload):
+        # Read the shipped cap so a future reduction cannot silently invalidate
+        # the helper's wire budget. The entire JSON must fit, not just its note.
+        source = (path.parents[1] / "crates/sysknife-brain/src/sanitize.rs").read_text(encoding="utf-8")
+        match = re.search(r"pub const MAX_OUTPUT_BYTES: usize = (\d+) \* (\d+);", source)
+        self.assertIsNotNone(match)
+        cap = int(match[1]) * int(match[2])
+        encoded = payload.encode("utf-8")
+        self.assertLessEqual(len(encoded), cap)
+        survived = json.loads(encoded[:cap])
+        self.assertIn("Empty/failed probes do not prove", survived["note"])
+
+    def test_all_probe_streams_are_bounded_after_json_escaping(self):
+        for text in ['"\\\n\t' * 5000, "防火墙😀" * 5000]:
+            with self.subTest(text=text[:8]):
+                p = {"status": "failed", "stdout": text, "stderr": text, "returncode": 1}
+                result = module.summarize(p, p, p)
+                self.assertEqual(result["state"], "unknown")
+                for observation in result["probes"].values():
+                    self.assertEqual(observation["returncode"], 1)
+                    for field in ("stdout", "stderr"):
+                        self.assertIn("[truncated by firewall-state]", observation[field])
+                self.assert_payload_survives_brain_cap(json.dumps(result))
+
+    def test_small_probe_streams_are_preserved_without_a_marker(self):
+        p = {"status": "failed", "stdout": "a\\b\n中文", "stderr": "permission denied", "returncode": 1}
+        result = module.summarize(p, p, p)
+        self.assertEqual(result["probes"], {"nftables": p, "ufw": p, "firewalld": p})
+
     def test_nft_rules_are_visible_when_ufw_is_inactive(self):
         result = module.summarize(nft([
             {"chain": {"hook": "input", "policy": "drop"}},

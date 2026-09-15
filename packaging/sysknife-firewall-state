@@ -10,6 +10,33 @@ import subprocess
 import sys
 
 
+TRUNCATION_MARKER = "\n[truncated by firewall-state]"
+# Budgets include JSON quotes/escaping, not just source characters. All six
+# streams together leave room for the summary below the brain's 8 KiB cap.
+STDOUT_JSON_BYTES = 1024
+STDERR_JSON_BYTES = 512
+
+
+def bounded_text(text, budget):
+    if len(json.dumps(text)) <= budget:
+        return text
+    remaining = budget - len(json.dumps(TRUNCATION_MARKER))
+    prefix = []
+    for char in text:
+        width = len(json.dumps(char)) - 2
+        if width > remaining:
+            break
+        prefix.append(char)
+        remaining -= width
+    return "".join(prefix) + TRUNCATION_MARKER
+
+
+def bounded_probe(observation):
+    return {**observation,
+            "stdout": bounded_text(observation["stdout"], STDOUT_JSON_BYTES),
+            "stderr": bounded_text(observation["stderr"], STDERR_JSON_BYTES)}
+
+
 def probe(argv):
     try:
         result = subprocess.run(argv, capture_output=True, text=True, timeout=5,
@@ -48,10 +75,13 @@ def summarize(nft, ufw, firewalld):
             nft_state = {"status": "unknown", "reason": "invalid nft JSON output"}
     return {"state": "observations_available" if backends else "unknown",
             "backends_observed": backends, "nftables": nft_state,
-            "probes": {"nftables": nft, "ufw": ufw, "firewalld": firewalld},
             "note": "Frontends can share nftables. Rules or an active frontend do not prove "
                     "that particular traffic is blocked. Empty/failed probes do not prove "
-                    "the host is unfiltered; legacy iptables and other mechanisms may exist."}
+                    "the host is unfiltered; legacy iptables and other mechanisms may exist.",
+            # Parse complete evidence above; only diagnostic excerpts are capped.
+            # Keep interpretation before diagnostics even if another layer caps it.
+            "probes": {"nftables": bounded_probe(nft), "ufw": bounded_probe(ufw),
+                       "firewalld": bounded_probe(firewalld)}}
 
 
 def main():

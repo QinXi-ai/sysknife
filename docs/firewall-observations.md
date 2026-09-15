@@ -3,7 +3,17 @@
 Use `GetFirewallBackendState` for a general firewall-state question. It probes
 nftables JSON, `ufw status verbose`, and `firewall-cmd --list-all`. It reports
 observed frontends and hooked nftables rules, preserving the individual probe
-output and failure status. `query_firewall` uses this action during planning.
+output excerpts and failure status. `query_firewall` uses this action during planning.
+
+The helper computes summaries from complete probe output before bounding the
+diagnostics. State, backend observations, nftables counts and the safety note
+precede `probes`. Each stdout excerpt is limited to 1,024 JSON-encoded bytes,
+each stderr excerpt to 512, including escaping and the explicit
+`[truncated by firewall-state]` marker. This leaves the complete JSON response
+below the planner's 8 KiB cap, including for non-ASCII or escape-heavy output.
+Small outputs remain unchanged. Excerpts can still contain firewall topology
+and are sent to the configured model; run the read-only commands locally for
+complete output rather than relying on these diagnostic excerpts.
 
 `GetNftablesRuleset` runs the fixed read-only `sudo nft list ruleset` command.
 The sudoers grants allow only that command and its JSON form; neither grant
