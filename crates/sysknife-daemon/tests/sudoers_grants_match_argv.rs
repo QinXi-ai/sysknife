@@ -97,6 +97,7 @@ fn every_sudo_action_is_authorised_by_a_packaged_grant() {
     );
 
     let mut unauthorised = Vec::new();
+    let mut checked = 0;
     for (_section, specs) in catalogue() {
         for spec in specs {
             let ActionMechanism::Command { program, args } = &spec.mechanism else {
@@ -105,6 +106,7 @@ fn every_sudo_action_is_authorised_by_a_packaged_grant() {
             if *program != "sudo" {
                 continue;
             }
+            checked += 1;
             assert!(
                 !args.iter().take(1).any(|arg| matches!(
                     arg.rsplit('/').next(),
@@ -119,6 +121,10 @@ fn every_sudo_action_is_authorised_by_a_packaged_grant() {
         }
     }
 
+    assert!(
+        checked > 50,
+        "only {checked} sudo action specs were checked; the mechanism or program filter must have changed and this guard is no longer looking at anything"
+    );
     assert!(
         unauthorised.is_empty(),
         "these actions invoke sudo with an argv no rule in packaging/sysknife-sudoers \
