@@ -14,6 +14,9 @@ Releases before `0.2.5` predate the public launch; their notes live in the
 
 ### Fixed
 
+- Align planner action descriptions with the Ubuntu execution fence, including
+  Ufw and the other tool families moved to shared or Debian-family support.
+  Guard both directions of the description/fence relationship (#416).
 - Discover release/e2e shell guards in local CI instead of maintaining a stale
   list. Report skipped required Postgres validation in the final summary and
   prefer Podman when both container runtimes are available (#346).

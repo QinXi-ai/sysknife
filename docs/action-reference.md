@@ -56,10 +56,10 @@ Every row is derived from the live code: the command from each action's `ActionS
 | `RemoveFlatpakRemote` | `sudo runuser -u testuser -- flatpak remote-delete --user remote` | Medium | All | – | – | remove a Flatpak remote — params: username\*, remote\* (name) |
 | `GetFlatpakAppInfo` | `sudo runuser -u testuser -- flatpak info --user app-id` | Low | All | – | – | show metadata for an installed Flatpak — params: username\*, app_id\* |
 | `UpdateFlatpak` | `sudo runuser -u testuser -- flatpak update --user -y com.example.App` | Medium | All | – | – | update Flatpak apps — params: username\* (required); app_id (optional — omit to update all) |
-| `UbuntuInstallFlatpak` | `sudo runuser -u testuser -- flatpak install --user -y flathub app-id` | Medium | Ubuntu | – | – | install a Flatpak app on Ubuntu — params: username\*, app_id\*, remote\* (e.g. flathub); Ubuntu only; Medium risk |
-| `UbuntuRemoveFlatpak` | `sudo runuser -u testuser -- flatpak uninstall --user -y app-id` | Medium | Ubuntu | – | – | remove a Flatpak app on Ubuntu — params: username\*, app_id\*; Ubuntu only; Medium risk |
-| `UbuntuUpdateFlatpak` | `sudo runuser -u testuser -- flatpak update --user -y com.example.App` | Medium | Ubuntu | – | – | update Flatpak app(s) on Ubuntu — param: username\*; optional: app_id (omit for all); Ubuntu only; Medium risk |
-| `UbuntuListFlatpaks` | `sudo runuser -u testuser -- flatpak list --user --app --columns=application,name,version,origin` | Low | Ubuntu | – | – | list installed Flatpak apps on Ubuntu — param: username\*; Ubuntu only; read-only |
+| `UbuntuInstallFlatpak` | `sudo runuser -u testuser -- flatpak install --user -y flathub app-id` | Medium | Ubuntu | – | – | install a Flatpak app — params: username\*, app_id\*, remote\* (e.g. flathub); Medium risk |
+| `UbuntuRemoveFlatpak` | `sudo runuser -u testuser -- flatpak uninstall --user -y app-id` | Medium | Ubuntu | – | – | remove a Flatpak app — params: username\*, app_id\*; Medium risk |
+| `UbuntuUpdateFlatpak` | `sudo runuser -u testuser -- flatpak update --user -y com.example.App` | Medium | Ubuntu | – | – | update Flatpak app(s) — param: username\*; optional: app_id (omit for all); Medium risk |
+| `UbuntuListFlatpaks` | `sudo runuser -u testuser -- flatpak list --user --app --columns=application,name,version,origin` | Low | Ubuntu | – | – | list installed Flatpak apps — param: username\*; read-only |
 
 ## Toolbox
 
@@ -262,51 +262,51 @@ Every row is derived from the live code: the command from each action's `ActionS
 
 | Action | Command | Risk | Distro | Rb | Ro | Description |
 |---|---|---|---|---|---|---|
-| `AppArmorStatus` | `sudo aa-status` | Low | Ubuntu | – | – | show status of all loaded AppArmor profiles (aa-status) — no params; Ubuntu only; read-only |
-| `AppArmorEnforce` | `sudo aa-enforce /etc/apparmor.d/usr.bin.firefox` | High | Ubuntu | – | – | put an AppArmor profile into enforce mode (aa-enforce) — param: profile_path\* (e.g. /etc/apparmor.d/usr.bin.firefox); Ubuntu only; High risk |
-| `AppArmorComplain` | `sudo aa-complain /etc/apparmor.d/usr.bin.firefox` | High | Ubuntu | – | – | put an AppArmor profile into complain/learning mode (aa-complain) — param: profile_path\*; Ubuntu only; High risk (disables MAC enforcement for the profile) |
+| `AppArmorStatus` | `sudo aa-status` | Low | Ubuntu | – | – | show status of all loaded AppArmor profiles (aa-status) — no params; read-only |
+| `AppArmorEnforce` | `sudo aa-enforce /etc/apparmor.d/usr.bin.firefox` | High | Ubuntu | – | – | put an AppArmor profile into enforce mode (aa-enforce) — param: profile_path\* (e.g. /etc/apparmor.d/usr.bin.firefox); High risk |
+| `AppArmorComplain` | `sudo aa-complain /etc/apparmor.d/usr.bin.firefox` | High | Ubuntu | – | – | put an AppArmor profile into complain/learning mode (aa-complain) — param: profile_path\*; High risk (disables MAC enforcement for the profile) |
 
 ## cloud-init
 
 | Action | Command | Risk | Distro | Rb | Ro | Description |
 |---|---|---|---|---|---|---|
-| `CloudInitStatus` | `cloud-init status --long` | Low | Ubuntu | – | – | show cloud-init provisioning status (cloud-init status --long) — no params; Ubuntu only; read-only |
+| `CloudInitStatus` | `cloud-init status --long` | Low | Ubuntu | – | – | show cloud-init provisioning status (cloud-init status --long) — no params; read-only |
 
 ## fail2ban
 
 | Action | Command | Risk | Distro | Rb | Ro | Description |
 |---|---|---|---|---|---|---|
-| `Fail2banStatus` | `sudo fail2ban-client status` | Low | Ubuntu | – | – | show fail2ban jail status — optional param: jail (omit for all jails); Ubuntu only; read-only |
-| `Fail2banBanIp` | `sudo fail2ban-client set sshd banip 192.0.2.1` | High | Ubuntu | – | – | ban an IP address in a fail2ban jail — params: jail\* (string), ip\* (IPv4 or IPv6); Ubuntu only; High risk |
-| `Fail2banUnbanIp` | `sudo fail2ban-client set sshd unbanip 192.0.2.1` | Medium | Ubuntu | – | – | unban an IP address from a fail2ban jail — params: jail\*, ip\*; Ubuntu only; Medium risk |
-| `ConfigureFail2banJail` | `sudo /usr/lib/sysknife/fail2ban-jail-edit --name sshd --maxretry 3` | High | Ubuntu | – | – | write a fail2ban jail override (/etc/fail2ban/jail.d/) — params: name\*, plus at least one of enabled (bool), maxretry (1-100), bantime/findtime (seconds 0-2592000); Ubuntu only; High risk; needs fail2ban installed |
+| `Fail2banStatus` | `sudo fail2ban-client status` | Low | Ubuntu | – | – | show fail2ban jail status — optional param: jail (omit for all jails); read-only |
+| `Fail2banBanIp` | `sudo fail2ban-client set sshd banip 192.0.2.1` | High | Ubuntu | – | – | ban an IP address in a fail2ban jail — params: jail\* (string), ip\* (IPv4 or IPv6); High risk |
+| `Fail2banUnbanIp` | `sudo fail2ban-client set sshd unbanip 192.0.2.1` | Medium | Ubuntu | – | – | unban an IP address from a fail2ban jail — params: jail\*, ip\*; Medium risk |
+| `ConfigureFail2banJail` | `sudo /usr/lib/sysknife/fail2ban-jail-edit --name sshd --maxretry 3` | High | Ubuntu | – | – | write a fail2ban jail override (/etc/fail2ban/jail.d/) — params: name\*, plus at least one of enabled (bool), maxretry (1-100), bantime/findtime (seconds 0-2592000); High risk; needs fail2ban installed |
 
 ## apt
 
 | Action | Command | Risk | Distro | Rb | Ro | Description |
 |---|---|---|---|---|---|---|
-| `AptUpdate` | `sudo env DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a /usr/bin/apt-get update` | Low | Ubuntu | – | – | refresh apt package index (apt-get update) — no params; Ubuntu only |
-| `AptUpgrade` | `sudo env DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a /usr/bin/apt-get dist-upgrade -y` | High | Ubuntu | – | – | upgrade all installed packages via dist-upgrade — no params; Ubuntu only; High risk |
-| `AptInstall` | `sudo env DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a /usr/bin/apt-get install -y curl` | Medium | Ubuntu | – | – | install a package — param: package\* (string, e.g. nginx); Ubuntu only |
-| `AptRemove` | `sudo env DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a /usr/bin/apt-get remove -y curl` | Medium | Ubuntu | – | – | remove a package, keep config files — param: package\*; Ubuntu only |
-| `AptPurge` | `sudo env DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a /usr/bin/apt-get purge -y curl` | Medium | Ubuntu | – | – | remove a package AND its config files — param: package\*; Ubuntu only |
-| `AptAutoremove` | `sudo env DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a /usr/bin/apt-get autoremove -y` | Medium | Ubuntu | – | – | remove automatically-installed packages no longer needed — no params; Ubuntu only |
-| `AptHold` | `sudo apt-mark hold curl` | Medium | Ubuntu | – | – | pin a package at its current version (apt-mark hold) — param: package\*; Ubuntu only |
-| `AptUnhold` | `sudo apt-mark unhold curl` | Medium | Ubuntu | – | – | unpin a package to allow upgrades (apt-mark unhold) — param: package\*; Ubuntu only |
-| `AptSearch` | `apt-cache search curl` | Low | Ubuntu | – | – | search apt repos for packages — param: term\*; Ubuntu only; read-only |
-| `AptListInstalled` | `dpkg -l` | Low | Ubuntu | – | – | list all installed packages (dpkg -l) — no params; Ubuntu only; read-only |
-| `AptShow` | `apt-cache show curl` | Low | Ubuntu | – | – | show package details (version, deps, description) — param: package\*; Ubuntu only; read-only |
-| `AptListUpgradable` | `bash -c "apt list --upgradable 2>/dev/null"` | Low | Ubuntu | – | – | list packages with available upgrades — no params; Ubuntu only; read-only. Use for 'are there pending updates?' or 'what updates are available?' |
-| `AptHistoryList` | `bash -c "grep -A 4 '^Start-Date' /var/log/apt/history.log \| tail -n 80"` | Low | Ubuntu | – | – | show recent apt transaction history — no params; Ubuntu only; read-only |
-| `ConfigureUnattendedUpgrades` | `sudo /usr/lib/sysknife/unattended-upgrades-edit --enable` | High | Ubuntu | – | – | enable or disable automatic security updates (unattended-upgrades) — param: enabled\* (bool); Ubuntu only; High risk |
+| `AptUpdate` | `sudo env DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a /usr/bin/apt-get update` | Low | Ubuntu | – | – | refresh apt package index (apt-get update) — no params |
+| `AptUpgrade` | `sudo env DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a /usr/bin/apt-get dist-upgrade -y` | High | Ubuntu | – | – | upgrade all installed packages via dist-upgrade — no params; High risk |
+| `AptInstall` | `sudo env DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a /usr/bin/apt-get install -y curl` | Medium | Ubuntu | – | – | install a package — param: package\* (string, e.g. nginx) |
+| `AptRemove` | `sudo env DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a /usr/bin/apt-get remove -y curl` | Medium | Ubuntu | – | – | remove a package, keep config files — param: package\* |
+| `AptPurge` | `sudo env DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a /usr/bin/apt-get purge -y curl` | Medium | Ubuntu | – | – | remove a package AND its config files — param: package\* |
+| `AptAutoremove` | `sudo env DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a /usr/bin/apt-get autoremove -y` | Medium | Ubuntu | – | – | remove automatically-installed packages no longer needed — no params |
+| `AptHold` | `sudo apt-mark hold curl` | Medium | Ubuntu | – | – | pin a package at its current version (apt-mark hold) — param: package\* |
+| `AptUnhold` | `sudo apt-mark unhold curl` | Medium | Ubuntu | – | – | unpin a package to allow upgrades (apt-mark unhold) — param: package\* |
+| `AptSearch` | `apt-cache search curl` | Low | Ubuntu | – | – | search apt repos for packages — param: term\*; read-only |
+| `AptListInstalled` | `dpkg -l` | Low | Ubuntu | – | – | list all installed packages (dpkg -l) — no params; read-only |
+| `AptShow` | `apt-cache show curl` | Low | Ubuntu | – | – | show package details (version, deps, description) — param: package\*; read-only |
+| `AptListUpgradable` | `bash -c "apt list --upgradable 2>/dev/null"` | Low | Ubuntu | – | – | list packages with available upgrades — no params; read-only. Use for 'are there pending updates?' or 'what updates are available?' |
+| `AptHistoryList` | `bash -c "grep -A 4 '^Start-Date' /var/log/apt/history.log \| tail -n 80"` | Low | Ubuntu | – | – | show recent apt transaction history — no params; read-only |
+| `ConfigureUnattendedUpgrades` | `sudo /usr/lib/sysknife/unattended-upgrades-edit --enable` | High | Ubuntu | – | – | enable or disable automatic security updates (unattended-upgrades) — param: enabled\* (bool); High risk |
 
 ## apt preferences / pinning
 
 | Action | Command | Risk | Distro | Rb | Ro | Description |
 |---|---|---|---|---|---|---|
-| `GetAptPins` | `apt-cache policy` | Low | Ubuntu | – | – | show apt pin priorities (apt-cache policy) — param: package (optional); Ubuntu only; read-only |
-| `SetAptPin` | `sudo /usr/lib/sysknife/apt-pin-edit --op set --name hold-nginx --package nginx --pin "version 1.24.*" --priority 990` | Medium | Ubuntu | – | – | pin a package to a version/release via /etc/apt/preferences.d — params: name\*, package\* (glob), pin\* (e.g. 'version 1.24.\*' or 'release a=noble-security'), priority\* (int -1..1000); Ubuntu only; Medium risk |
-| `RemoveAptPin` | `sudo /usr/lib/sysknife/apt-pin-edit --op remove --name hold-nginx` | Medium | Ubuntu | – | – | remove a SysKnife-managed apt pin — param: name\*; Ubuntu only; Medium risk |
+| `GetAptPins` | `apt-cache policy` | Low | Ubuntu | – | – | show apt pin priorities (apt-cache policy) — param: package (optional); read-only |
+| `SetAptPin` | `sudo /usr/lib/sysknife/apt-pin-edit --op set --name hold-nginx --package nginx --pin "version 1.24.*" --priority 990` | Medium | Ubuntu | – | – | pin a package to a version/release via /etc/apt/preferences.d — params: name\*, package\* (glob), pin\* (e.g. 'version 1.24.\*' or 'release a=noble-security'), priority\* (int -1..1000); Medium risk |
+| `RemoveAptPin` | `sudo /usr/lib/sysknife/apt-pin-edit --op remove --name hold-nginx` | Medium | Ubuntu | – | – | remove a SysKnife-managed apt pin — param: name\*; Medium risk |
 
 ## PPA
 
@@ -319,52 +319,52 @@ Every row is derived from the live code: the command from each action's `ActionS
 
 | Action | Command | Risk | Distro | Rb | Ro | Description |
 |---|---|---|---|---|---|---|
-| `SnapInstall` | `sudo sh -c "snap install --channel=stable firefox && snap refresh --hold firefox"` | Medium | Ubuntu | – | – | install a snap (auto-holds to prevent auto-refresh) — params: name\*; optional: channel (default stable), auto_update (bool, default false); Ubuntu only |
-| `SnapRemove` | `sudo snap remove firefox` | Medium | Ubuntu | – | – | remove a snap — param: name\*; Ubuntu only |
-| `SnapRefresh` | `sudo snap refresh firefox` | Medium | Ubuntu | – | – | update a snap or all snaps — param: name (optional, omit for all); Ubuntu only |
-| `SnapHold` | `sudo snap refresh --hold firefox` | Medium | Ubuntu | – | – | pin a snap at its current version (snap refresh --hold) — param: name\*; Ubuntu only |
-| `SnapUnhold` | `sudo snap refresh --unhold firefox` | Medium | Ubuntu | – | – | allow a held snap to auto-refresh again — param: name\*; Ubuntu only |
-| `SnapList` | `snap list` | Low | Ubuntu | – | – | list installed snaps — no params; Ubuntu only; read-only |
-| `SnapInfo` | `snap info firefox` | Low | Ubuntu | – | – | show snap details (version, channel, description) — param: name\*; Ubuntu only; read-only |
-| `SnapRevert` | `sudo snap revert firefox` | Medium | Ubuntu | – | – | revert a snap to its previous revision — param: name\*; Ubuntu only |
-| `SnapClassicInstall` | `sudo snap install --classic code` | Medium | Ubuntu | – | – | install a snap with classic confinement (full system access) — param: name\*; Ubuntu only |
+| `SnapInstall` | `sudo sh -c "snap install --channel=stable firefox && snap refresh --hold firefox"` | Medium | Ubuntu | – | – | install a snap (auto-holds to prevent auto-refresh) — params: name\*; optional: channel (default stable), auto_update (bool, default false) |
+| `SnapRemove` | `sudo snap remove firefox` | Medium | Ubuntu | – | – | remove a snap — param: name\* |
+| `SnapRefresh` | `sudo snap refresh firefox` | Medium | Ubuntu | – | – | update a snap or all snaps — param: name (optional, omit for all) |
+| `SnapHold` | `sudo snap refresh --hold firefox` | Medium | Ubuntu | – | – | pin a snap at its current version (snap refresh --hold) — param: name\* |
+| `SnapUnhold` | `sudo snap refresh --unhold firefox` | Medium | Ubuntu | – | – | allow a held snap to auto-refresh again — param: name\* |
+| `SnapList` | `snap list` | Low | Ubuntu | – | – | list installed snaps — no params; read-only |
+| `SnapInfo` | `snap info firefox` | Low | Ubuntu | – | – | show snap details (version, channel, description) — param: name\*; read-only |
+| `SnapRevert` | `sudo snap revert firefox` | Medium | Ubuntu | – | – | revert a snap to its previous revision — param: name\* |
+| `SnapClassicInstall` | `sudo snap install --classic code` | Medium | Ubuntu | – | – | install a snap with classic confinement (full system access) — param: name\* |
 
 ## ufw
 
 | Action | Command | Risk | Distro | Rb | Ro | Description |
 |---|---|---|---|---|---|---|
-| `UfwEnable` | `sudo ufw --force enable` | High | Ubuntu | – | – | enable the ufw firewall — no params; Ubuntu only; High risk |
-| `UfwDisable` | `sudo ufw disable` | High | Ubuntu | – | – | disable the ufw firewall — no params; Ubuntu only; High risk |
-| `UfwAllow` | `sudo ufw allow 22` | High | Ubuntu | – | – | allow inbound traffic on a port or service — param: port_or_service\* (e.g. 22, 22/tcp, OpenSSH); Ubuntu only; High risk |
-| `UfwDeny` | `sudo ufw deny 23` | High | Ubuntu | – | – | deny inbound traffic on a port or service — param: port_or_service\*; Ubuntu only; High risk |
-| `UfwReset` | `sudo ufw --force reset` | High | Ubuntu | – | – | reset ufw to defaults, removing all rules — no params; Ubuntu only; High risk; irreversible |
+| `UfwEnable` | `sudo ufw --force enable` | High | Ubuntu | – | – | enable the ufw firewall — no params; High risk |
+| `UfwDisable` | `sudo ufw disable` | High | Ubuntu | – | – | disable the ufw firewall — no params; High risk |
+| `UfwAllow` | `sudo ufw allow 22` | High | Ubuntu | – | – | allow inbound traffic on a port or service — param: port_or_service\* (e.g. 22, 22/tcp, OpenSSH); High risk |
+| `UfwDeny` | `sudo ufw deny 23` | High | Ubuntu | – | – | deny inbound traffic on a port or service — param: port_or_service\*; High risk |
+| `UfwReset` | `sudo ufw --force reset` | High | Ubuntu | – | – | reset ufw to defaults, removing all rules — no params; High risk; irreversible |
 | `UfwStatus` | `sudo ufw status verbose` | Low | Ubuntu | – | – | show current ufw status and rules — optional param: numbered (boolean, default false); true runs ufw status numbered and exposes rule_number values for UfwDeleteRule, false keeps verbose status; read-only |
 | `UfwDeleteRule` | `sudo ufw --force delete 1` | High | Ubuntu | – | – | delete a ufw rule by number — param: rule_number\* (positive integer from query_ufw_rules or UfwStatus with numbered=true); never guess a rule number, and refresh after rule changes; High risk |
-| `UfwLimit` | `sudo ufw limit 22` | High | Ubuntu | – | – | add rate-limiting rule on a port/service (&gt;6 connections/30s blocked) — param: target\* (e.g. '22' or 'ssh'); Ubuntu only; High risk; use for SSH brute-force mitigation |
+| `UfwLimit` | `sudo ufw limit 22` | High | Ubuntu | – | – | add rate-limiting rule on a port/service (&gt;6 connections/30s blocked) — param: target\* (e.g. '22' or 'ssh'); High risk; use for SSH brute-force mitigation |
 
 ## netplan
 
 | Action | Command | Risk | Distro | Rb | Ro | Description |
 |---|---|---|---|---|---|---|
-| `NetplanGetConfig` | `find /etc/netplan -maxdepth 1 -name *.yaml -print -exec cat {} +` | Low | Ubuntu | – | – | read the SAVED network configuration: the netplan YAML in /etc/netplan/ — no params; Ubuntu only; read-only; on Ubuntu this is what "the network config" means, as opposed to GetNetworkStatus which reports live interface state |
-| `NetplanApply` | `sudo netplan apply` | High | Ubuntu | – | – | apply netplan network configuration immediately — no params; Ubuntu only; High risk; can disconnect SSH |
-| `NetplanSet` | `sudo netplan set ethernets.eth0.dhcp4=true` | High | Ubuntu | – | – | set a single netplan key to a value — params: key\* (e.g. 'ethernets.eth0.dhcp4'), value\*; Ubuntu only; High risk; run NetplanApply to activate |
-| `NetplanGenerate` | `sudo netplan generate` | Medium | Ubuntu | – | – | regenerate netplan backend config without applying — no params; Ubuntu only; Medium risk; dry-run before NetplanApply |
+| `NetplanGetConfig` | `find /etc/netplan -maxdepth 1 -name *.yaml -print -exec cat {} +` | Low | Ubuntu | – | – | read the SAVED network configuration: the netplan YAML in /etc/netplan/ — no params; read-only; on Ubuntu this is what "the network config" means, as opposed to GetNetworkStatus which reports live interface state |
+| `NetplanApply` | `sudo netplan apply` | High | Ubuntu | – | – | apply netplan network configuration immediately — no params; High risk; can disconnect SSH |
+| `NetplanSet` | `sudo netplan set ethernets.eth0.dhcp4=true` | High | Ubuntu | – | – | set a single netplan key to a value — params: key\* (e.g. 'ethernets.eth0.dhcp4'), value\*; High risk; run NetplanApply to activate |
+| `NetplanGenerate` | `sudo netplan generate` | Medium | Ubuntu | – | – | regenerate netplan backend config without applying — no params; Medium risk; dry-run before NetplanApply |
 
 ## distrobox
 
 | Action | Command | Risk | Distro | Rb | Ro | Description |
 |---|---|---|---|---|---|---|
-| `DistroboxList` | `distrobox list` | Low | Ubuntu | – | – | list distrobox containers — no params; Ubuntu only; read-only |
-| `DistroboxCreate` | `distrobox create --yes --name dev --image ubuntu:24.04` | Medium | Ubuntu | – | – | create a distrobox container — params: name\*, image\* (e.g. ubuntu:24.04, fedora:41); Ubuntu only |
-| `DistroboxRemove` | `distrobox rm --force dev` | Medium | Ubuntu | – | – | remove a distrobox container — param: name\*; Ubuntu only |
+| `DistroboxList` | `distrobox list` | Low | Ubuntu | – | – | list distrobox containers — no params; read-only |
+| `DistroboxCreate` | `distrobox create --yes --name dev --image ubuntu:24.04` | Medium | Ubuntu | – | – | create a distrobox container — params: name\*, image\* (e.g. ubuntu:24.04, fedora:41) |
+| `DistroboxRemove` | `distrobox rm --force dev` | Medium | Ubuntu | – | – | remove a distrobox container — param: name\* |
 
 ## GRUB
 
 | Action | Command | Risk | Distro | Rb | Ro | Description |
 |---|---|---|---|---|---|---|
-| `GrubGetKargs` | `grep -E ^GRUB_CMDLINE_LINUX /etc/default/grub` | Low | Ubuntu | – | – | read current GRUB_CMDLINE_LINUX from /etc/default/grub — no params; Ubuntu only; read-only |
-| `GrubSetKargs` | `sudo /usr/lib/sysknife/grub-kargs-edit --append quiet --delete splash` | High | Ubuntu | ✓ | – | modify GRUB kernel arguments and run update-grub — params: append (list), delete (list), bare tokens only (no '='); both lists are screened for boot-security downgrades; Ubuntu only; High risk; requires reboot |
+| `GrubGetKargs` | `grep -E ^GRUB_CMDLINE_LINUX /etc/default/grub` | Low | Ubuntu | – | – | read current GRUB_CMDLINE_LINUX from /etc/default/grub — no params; read-only |
+| `GrubSetKargs` | `sudo /usr/lib/sysknife/grub-kargs-edit --append quiet --delete splash` | High | Ubuntu | ✓ | – | modify GRUB kernel arguments and run update-grub — params: append (list), delete (list), bare tokens only (no '='); both lists are screened for boot-security downgrades; High risk; requires reboot |
 
 ## Ubuntu release upgrade
 
@@ -392,7 +392,7 @@ Every row is derived from the live code: the command from each action's `ActionS
 
 | Action | Command | Risk | Distro | Rb | Ro | Description |
 |---|---|---|---|---|---|---|
-| `MultipassList` | `multipass list` | Low | Ubuntu | – | – | list Multipass VMs and their state — no params; Ubuntu only; read-only |
+| `MultipassList` | `multipass list` | Low | Ubuntu | – | – | list Multipass VMs and their state — no params; read-only |
 
 ---
 
