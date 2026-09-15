@@ -2457,11 +2457,9 @@ mod tests {
             ActionMechanism::Command {
                 program: "sudo",
                 args: vec![
-                    "runuser".to_string(),
-                    "-u".to_string(),
-                    "alice".to_string(),
-                    "--".to_string(),
+                    "/usr/lib/sysknife/action-steps".to_string(),
                     "flatpak".to_string(),
+                    "alice".to_string(),
                     "install".to_string(),
                     "--user".to_string(),
                     "-y".to_string(),
@@ -2489,11 +2487,9 @@ mod tests {
             ActionMechanism::Command {
                 program: "sudo",
                 args: vec![
-                    "runuser".to_string(),
-                    "-u".to_string(),
-                    "alice".to_string(),
-                    "--".to_string(),
+                    "/usr/lib/sysknife/action-steps".to_string(),
                     "flatpak".to_string(),
+                    "alice".to_string(),
                     "install".to_string(),
                     "--user".to_string(),
                     "-y".to_string(),
