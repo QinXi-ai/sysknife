@@ -36,6 +36,7 @@ PYEOF
 
 fixture_files=(
     "${claim_files_from_checker[@]}"
+    ".githooks/pre-commit"
     "assets/demo/mcp-flow-mock.sh"
     # Evidence the numeric claims derive from, and the source the action count is
     # counted out of. Without these the checker aborts on its own input check and
@@ -93,6 +94,14 @@ assert_rejected_with_diagnostic() {
         fi
     done
 }
+
+# Hook/prose drift must name the changed command, not merely fail on a fixture.
+printf '\nnode --version\n' >> "$fixture/.githooks/pre-commit"
+assert_rejected_with_diagnostic 'undocumented sixth hook step' 'pre-commit steps differ' 'node --version'
+cp "$repo_root/.githooks/pre-commit" "$fixture/.githooks/pre-commit"
+sed '/^scripts\/test_baseline.sh$/d' "$repo_root/.githooks/pre-commit" > "$fixture/.githooks/pre-commit"
+assert_rejected_with_diagnostic 'documented step removed from hook' 'pre-commit steps differ' 'scripts/test_baseline.sh'
+cp "$repo_root/.githooks/pre-commit" "$fixture/.githooks/pre-commit"
 
 # The story coverage sentence is a derived claim, not a second catalogue. Mutate
 # its published All-family figure without repeating today's value in this test.
@@ -699,6 +708,58 @@ fi
 sed -i "s/${actions} typed actions/999 typed actions/" "$fixture/docs/introduction.md"
 assert_rejected 'action count that disagrees with the catalogue source'
 cp "$repo_root/docs/introduction.md" "$fixture/docs/introduction.md"
+
+# An ActionSpec qualifier must not exempt a stale subset count from evidence.
+python3 - "$fixture/docs/developer-guide.md" <<'PYEOF'
+import re
+import sys
+from pathlib import Path
+path = Path(sys.argv[1])
+text = path.read_text(encoding="utf-8")
+updated, count = re.subn(
+    r"[0-9]+ actions with an `ActionSpec`",
+    "4 actions with an `ActionSpec`",
+    text,
+    count=1,
+)
+if count != 1:
+    raise SystemExit("could not find the ActionSpec count in the fixture")
+path.write_text(updated, encoding="utf-8")
+PYEOF
+assert_rejected_with_diagnostic \
+    'ActionSpec count that disagrees with the generated table' \
+    'developer-guide.md' 'claims 4 actions with an ActionSpec' 'derived'
+cp "$repo_root/docs/developer-guide.md" "$fixture/docs/developer-guide.md"
+
+# The generated-table reader must fail closed on an empty table and count rows exactly.
+python3 - "$repo_root/scripts/check_evidence_claims.py" <<'PYEOF'
+import importlib.util
+import tempfile
+from pathlib import Path
+import sys
+spec = importlib.util.spec_from_file_location("checker", sys.argv[1])
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+with tempfile.TemporaryDirectory() as tmp:
+    root = Path(tmp)
+    docs = root / "docs"
+    docs.mkdir()
+    ref = docs / "action-reference.md"
+    ref.write_text(
+        "| Action | Command |\n|---|---|\n"
+        "| `One` | `one` |\n| `Two2` | `two` |\n| `Three_3` | `three` |\n",
+        encoding="utf-8",
+    )
+    if mod.count_action_specs(root) != 3:
+        raise SystemExit("ActionSpec row fixture did not derive exactly 3")
+    ref.write_text("| Action | Command |\n|---|---|\n", encoding="utf-8")
+    try:
+        mod.count_action_specs(root)
+    except mod.Failure:
+        pass
+    else:
+        raise SystemExit("empty ActionSpec table did not fail closed")
+PYEOF
 
 # No evidence at all must fail loudly rather than pass for lack of anything to
 # compare against.
