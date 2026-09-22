@@ -239,7 +239,7 @@ rename a public item, so it goes out in the right release.
 
 The `container-image` check builds the shipped Dockerfile when an image input
 changes, then verifies the CLI version and uid 10001. It also proves the smoke
-checks reject an incorrect version and an image running as root. BuildKit caches
+checks reject an image reporting an incorrect version and one running as root. BuildKit caches
 layers between runs. The trigger set includes both Cargo manifests, all copied
 crate/CLI/Tauri sources, `.dockerignore`, Dockerfile, and the check itself;
 other paths are excluded by `.dockerignore` and are not copied into the build.
