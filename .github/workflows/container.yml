@@ -3,7 +3,7 @@ name: container
 
 on:
   push:
-    branches: [main]
+    branches: [ci-evidence/467-container]
   pull_request:
   workflow_dispatch:
 
