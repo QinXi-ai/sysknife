@@ -124,7 +124,7 @@ sudo systemctl enable --now sysknife-daemon
 sysknife "show disk usage"
 ```
 
-For prebuilt binaries instead of a build, run `npx sysknife-setup` (Node 18+).
+For prebuilt binaries instead of a build, run `npx sysknife-setup` (Node 22+).
 See the canonical [Quick Start](quickstart.md).
 
 No API key needed if you have [Ollama](https://ollama.com) running locally —

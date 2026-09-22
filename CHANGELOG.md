@@ -12,6 +12,15 @@ Releases before `0.2.5` predate the public launch; their notes live in the
 
 ## [Unreleased]
 
+### Changed
+
+- `sysknife-setup` requires Node 22 or newer. Node 18 and 20 no longer receive
+  security fixes, so this drops support for them rather than retiring an
+  untested claim: `engines.node`, the preflight guard and all six published
+  support statements move together, and the refusal message says why the floor
+  moved. Nothing in CI is affected; every job that touches JavaScript already
+  runs Node 24 (#327).
+
 ### Fixed
 
 - `sysknife audit verify` now reports `cannot_verify` and exits 2 over an empty

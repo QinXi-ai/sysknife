@@ -316,9 +316,66 @@ if grep -Fq -- '--no-verify' "$release_workflow"; then
     exit 1
 fi
 
-if grep -Eiq '(^|[[:space:]])(cargo|npm)[[:space:]]+publish|gh[[:space:]]+release[[:space:]]+create' "$rehearsal"; then
-    printf 'FAIL: rehearsal contains a publication command\n' >&2
-    exit 1
-fi
+python3 "$repo_root/scripts/check-rehearsal-publication.py" "$rehearsal"
+
+# Mutate source text only: none of these publication commands is executed.
+python3 - "$repo_root" <<'PYTHON'
+from pathlib import Path
+import subprocess
+import sys
+import tempfile
+
+root = Path(sys.argv[1])
+checker = root / "scripts/check-rehearsal-publication.py"
+source = (root / "scripts/release_rehearsal.sh").read_text(encoding="utf-8")
+mutations = [
+    "cargo publish",
+    'CARGO_BIN=cargo\n"$CARGO_BIN" publish',
+    'cargo_args=(publish)\ncargo "${cargo_args[@]}"',
+    "npm publish --access public",
+    "gh release create v9.9.9",
+    "gh api -X POST repos/o/r/releases",
+    "curl -X PUT https://crates.io/api/v1/crates/new",
+    "wget --post-file=x.crate https://crates.io/api/v1/crates/new",
+    "out=$(cargo publish --dry-run)",
+    "true && npm publish",
+    # A reviewed substring must not conceal an additional command on its line.
+    "cargo metadata --locked; gh api -X POST repos/o/r/releases",
+    "# never publishes packages, creates tags; cargo publish",
+]
+
+def run(check, path, expected=None):
+    result = subprocess.run([sys.executable, str(check), str(path)],
+                            capture_output=True, text=True)
+    if expected is None:
+        assert result.returncode == 0, result.stderr
+    else:
+        assert result.returncode != 0, f"accepted {path}"
+        assert expected in result.stderr, result.stderr
+
+with tempfile.TemporaryDirectory() as directory:
+    directory = Path(directory)
+    candidate = directory / "rehearsal.sh"
+    candidate.write_text(source, encoding="utf-8")
+    run(checker, candidate)
+    for mutation in mutations:
+        candidate.write_text(source + "\n" + mutation + "\n", encoding="utf-8")
+        run(checker, candidate, "not on the reviewed list")
+    candidate.write_text(source, encoding="utf-8")
+    for pattern in ("PUBLICATION_PATTERN", "TOOL_PATTERN"):
+        broken = directory / "broken-checker.py"
+        text = checker.read_text(encoding="utf-8")
+        anchor = f"{pattern} = "
+        assert text.count(anchor) == 1, f"missing mutation anchor {anchor}"
+        lines = text.splitlines()
+        lines = ['%s = r"(?!)"' % pattern if line.startswith(anchor) else line
+                 for line in lines]
+        broken.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        run(broken, candidate, "screen read 0 line(s)")
+    run(checker, directory / "missing.sh", "cannot read")
+    candidate.write_text("", encoding="utf-8")
+    run(checker, candidate, "screen read 0 line(s)")
+print("Publication guard: clean source accepted; 16 mutations/invalid inputs rejected.")
+PYTHON
 
 printf 'Release rehearsal contract passed.\n'
