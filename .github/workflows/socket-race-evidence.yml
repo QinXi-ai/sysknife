@@ -1,0 +1,39 @@
+name: Socket race evidence
+on:
+  push:
+    branches: [ci-evidence/356-socket-race]
+permissions:
+  contents: read
+jobs:
+  repeat:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    env:
+      CARGO_INCREMENTAL: 0
+      CARGO_PROFILE_DEV_DEBUG: 0
+      CARGO_PROFILE_TEST_DEBUG: 0
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+        with:
+          cache-on-failure: true
+      - name: Build the ordinary cargo test binary
+        run: cargo test -p sysknife-cli --bins --locked --no-run
+      - name: Single-thread control then forty parallel runs
+        run: |
+          for i in $(seq 1 5); do
+            cargo test -p sysknife-cli --bins --locked -- --test-threads=1 > "$RUNNER_TEMP/serial-$i.log" 2>&1
+            tail -3 "$RUNNER_TEMP/serial-$i.log"
+          done
+          failures=0
+          for i in $(seq 1 40); do
+            if cargo test -p sysknife-cli --bins --locked > "$RUNNER_TEMP/parallel-$i.log" 2>&1; then
+              echo "parallel run $i: PASS"
+            else
+              failures=$((failures + 1))
+              echo "parallel run $i: FAIL"
+              cat "$RUNNER_TEMP/parallel-$i.log"
+            fi
+          done
+          echo "serial=5/5 parallel_failures=$failures/40" | tee -a "$GITHUB_STEP_SUMMARY"
