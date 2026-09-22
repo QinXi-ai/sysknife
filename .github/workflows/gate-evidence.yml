@@ -1,0 +1,73 @@
+name: Gate before-after evidence
+on:
+  push:
+    branches: [ci-evidence/458-459-gates]
+permissions:
+  contents: read
+jobs:
+  gates:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7.0.0
+        with:
+          node-version: "24"
+      - run: pip install PyYAML==6.0.2 yamllint==1.38.0
+      - name: Baseline mutation grid
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import subprocess
+          source = Path('scripts/release_rehearsal.sh')
+          original = source.read_text()
+          mutations = [
+              ('cargo publish', 1),
+              ('CARGO_BIN=cargo\n"$CARGO_BIN" publish', 0),
+              ('cargo_args=(publish)\ncargo "${cargo_args[@]}"', 0),
+              ('npm publish --access public', 1),
+              ('gh release create v9.9.9', 1),
+              ('gh api -X POST repos/o/r/releases', 0),
+              ('curl -X PUT https://crates.io/api/v1/crates/new', 0),
+              ('wget --post-file=x.crate https://crates.io/api/v1/crates/new', 0),
+              ('out=$(cargo publish --dry-run)', 0),
+              ('true && npm publish', 1),
+          ]
+          try:
+              for index, (mutation, expected) in enumerate(mutations, 1):
+                  source.write_text(original + '\n' + mutation + '\n')
+                  result = subprocess.run(['bash', 'tests/release/release-rehearsal.test.sh'], capture_output=True, text=True)
+                  print(f'baseline P{index}: rc={result.returncode}; expected={expected}', flush=True)
+                  print((result.stdout + result.stderr)[-500:], flush=True)
+                  assert result.returncode == expected
+          finally:
+              source.write_text(original)
+          path = Path('.github/actions/probe/action.yml')
+          path.parent.mkdir(parents=True)
+          path.write_text('runs: {using: composite, steps: [{uses: attacker/exfil@main}]}\n')
+          try:
+              result = subprocess.run(['bash', 'tests/release/release-rehearsal.test.sh'], capture_output=True, text=True)
+              print(f'baseline composite mutable ref: rc={result.returncode}', flush=True)
+              print((result.stdout + result.stderr)[-500:], flush=True)
+              assert result.returncode == 0
+          finally:
+              path.unlink()
+              path.parent.rmdir()
+              path.parent.parent.rmdir()
+          PY
+      - name: Fixed publication gate and claim screen
+        run: |
+          git checkout --detach origin/fix/458-rehearsal-publication
+          git rev-parse HEAD
+          bash tests/release/release-rehearsal.test.sh
+          python3 scripts/check_evidence_claims.py
+      - name: Fixed composite gates and claim screen
+        run: |
+          git checkout --detach origin/fix/459-composite-action-checks
+          git rev-parse HEAD
+          bash tests/release/release-rehearsal.test.sh
+          bash tests/release/action-pin-comments.test.sh
+          bash tests/release/node-eol.test.sh
+          bash scripts/lint-github-yaml.sh
+          python3 scripts/check_evidence_claims.py
