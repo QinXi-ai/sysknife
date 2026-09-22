@@ -111,6 +111,15 @@ installed by yamllint). Both `docs-and-hygiene` and `scripts/ci-local.sh` requir
 this check, including a working GitHub API connection. Offline regression tests
 run with `bash tests/release/action-pin-comments.test.sh`.
 
+Workflow checks also discover nested `.github/actions/**/action.yml` and
+`action.yaml` metadata. Composite `runs.steps[*].uses` references require the
+same SHA pins and version comments as workflow steps. Local and CI YAML linting
+use `bash scripts/lint-github-yaml.sh`; Node EOL checks include both setup-node
+versions and local JavaScript actions' `runs.using` runtime. An absent actions
+directory is allowed; an existing empty or unreadable directory fails discovery.
+Run `python3 tests/test_github_yaml.py` for the cross-gate fixtures (requires
+PyYAML and yamllint).
+
 ```sh
 git checkout -b feat/<short-name>
 # … implement …
