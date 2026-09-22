@@ -237,6 +237,16 @@ rename a public item, so it goes out in the right release.
 
 ### 3. Commit style
 
+The `container-image` check builds the shipped Dockerfile when an image input
+changes, then verifies the CLI version and uid 10001. It also proves the smoke
+checks reject an image reporting an incorrect version and one running as root. BuildKit caches
+layers between runs. The trigger set includes both Cargo manifests, all copied
+crate/CLI/Tauri sources, `.dockerignore`, Dockerfile, and the check itself;
+other paths are excluded by `.dockerignore` and are not copied into the build.
+Documentation-only changes still receive a successful check without a build.
+Repository administrators should require `container-image` in branch protection
+so Dependabot base-image updates cannot merge without this evidence.
+
 Conventional Commits on the title:
 
 ```
