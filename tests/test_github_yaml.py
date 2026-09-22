@@ -21,7 +21,10 @@ class ActionMetadataTests(unittest.TestCase):
         self.workflows = self.root / ".github/workflows"
         self.actions = self.root / ".github/actions"
         self.workflows.mkdir(parents=True)
-        (self.root / ".github/ISSUE_TEMPLATE").mkdir()
+        self.templates = self.root / ".github/ISSUE_TEMPLATE"
+        self.templates.mkdir()
+        (self.templates / "bug.yml").write_text(
+            "---\nname: Bug report\ndescription: Report a bug\nbody: []\n", encoding="utf-8")
         (self.workflows / "ci.yml").write_text(
             "---\njobs:\n  build:\n    steps:\n"
             f"      - uses: actions/checkout@{SHA}  # v7.0.1\n"
@@ -81,6 +84,17 @@ class ActionMetadataTests(unittest.TestCase):
         (self.workflows / "ci.yml").unlink()
         self.action("runs: {using: composite, steps: []}\n")
         self.pins("no workflow files matched")
+
+    def test_empty_templates_is_not_rescued_by_workflow(self):
+        (self.templates / "bug.yml").unlink()
+        command = ["bash", str(ROOT / "scripts/lint-github-yaml.sh"), str(self.root)]
+        for unrelated in (False, True):
+            with self.subTest(unrelated_file=unrelated):
+                if unrelated:
+                    (self.templates / "README.md").write_text("Not a YAML template.\n")
+                with self.assertRaisesRegex(ValueError, "no issue templates matched"):
+                    discover(self.workflows, self.actions, self.templates)
+                self.run_command(command, "no issue templates matched")
 
     def test_malformed_and_directory_metadata_fail(self):
         path = self.action("runs: [\n")

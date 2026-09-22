@@ -28,7 +28,10 @@ def discover(workflows, actions=None, templates=None):
             raise ValueError(f"no action metadata files matched under {actions}")
         files.extend(sorted(found))
     if templates is not None:
-        files.extend(sorted(p for p in templates.iterdir() if p.suffix in (".yml", ".yaml")))
+        found = sorted(p for p in templates.iterdir() if p.suffix in (".yml", ".yaml"))
+        if not found:
+            raise ValueError(f"no issue templates matched under {templates}")
+        files.extend(found)
     return files
 
 

@@ -118,7 +118,9 @@ use `bash scripts/lint-github-yaml.sh`; Node EOL checks include both setup-node
 versions and local JavaScript actions' `runs.using` runtime. An absent actions
 directory is allowed; an existing empty or unreadable directory fails discovery.
 Run `python3 tests/test_github_yaml.py` for the cross-gate fixtures (requires
-PyYAML and yamllint).
+PyYAML and yamllint). The full `bash tests/release/release-rehearsal.test.sh`
+gate invokes these fixtures too, so install both before running it locally:
+`python3 -m pip install PyYAML==6.0.2 yamllint==1.38.0`.
 
 ```sh
 git checkout -b feat/<short-name>
