@@ -1078,7 +1078,28 @@ mod tests {
             let Some((_, params)) = description.split_once("param") else {
                 continue;
             };
-            let has_credential_param = params
+            // Parentheses describe allowed values, such as sshd's
+            // PasswordAuthentication option. Those are not parameter names.
+            let mut depth = 0;
+            let names: String = params
+                .split(';')
+                .next()
+                .unwrap_or("")
+                .chars()
+                .filter_map(|c| match c {
+                    '(' => {
+                        depth += 1;
+                        None
+                    }
+                    ')' => {
+                        depth -= 1;
+                        None
+                    }
+                    _ if depth == 0 => Some(c),
+                    _ => None,
+                })
+                .collect();
+            let has_credential_param = names
                 .split(|c: char| !c.is_ascii_alphanumeric() && c != '_')
                 .any(|word| credential_names.contains(&word));
             if has_credential_param {
