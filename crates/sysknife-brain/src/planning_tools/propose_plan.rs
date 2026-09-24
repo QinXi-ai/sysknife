@@ -1080,23 +1080,22 @@ mod tests {
             };
             // Parentheses describe allowed values, such as sshd's
             // PasswordAuthentication option. Those are not parameter names.
-            let mut depth = 0;
+            let mut depth: usize = 0;
             let names: String = params
                 .split(';')
                 .next()
                 .unwrap_or("")
                 .chars()
-                .filter_map(|c| match c {
+                .filter(|&c| match c {
                     '(' => {
                         depth += 1;
-                        None
+                        false
                     }
                     ')' => {
-                        depth -= 1;
-                        None
+                        depth = depth.saturating_sub(1);
+                        false
                     }
-                    _ if depth == 0 => Some(c),
-                    _ => None,
+                    _ => depth == 0,
                 })
                 .collect();
             let has_credential_param = names
