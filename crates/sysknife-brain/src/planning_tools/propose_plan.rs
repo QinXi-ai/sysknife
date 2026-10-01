@@ -150,7 +150,7 @@ this is runtime status, NOT the saved configuration; on Ubuntu the saved config 
     ("GetFirewallBackendState",
      "inspect nftables, ufw and firewalld observations — no params; read-only; use for general firewall status; unavailable or inactive frontends do not prove the host is unfiltered"),
     ("ConfigureWifi",
-     "connect to a Wi-Fi network — params: ssid*, password (optional for open networks)"),
+     "connect to a Wi-Fi network — params: ssid* (a planned step joins open networks only; a password is refused)"),
     ("SetDnsServers",
      "set DNS servers for an interface — params: interface* (e.g. wlp1s0), servers* (string[])"),
     ("ConfigureFirewall",
@@ -463,14 +463,27 @@ reports live interface state"),
      "list Multipass VMs and their state — no params; read-only"),
 ];
 
-/// These daemon actions need a credential value, but the planner has no
+/// These daemon actions always need a credential value, but the planner has no
 /// out-of-band credential channel or reference resolver. Keep them in
 /// `KNOWN_ACTIONS` for the typed daemon catalogue, but never offer or accept
 /// them in a model-authored plan.
-const CREDENTIAL_ACTIONS_WITHOUT_ENTRY: &[&str] = &["ConfigureWifi", "ProAttach"];
+const CREDENTIAL_ACTIONS_WITHOUT_ENTRY: &[&str] = &["ProAttach"];
+
+/// Optional credential parameters on actions the planner still offers. The
+/// action stays available without the parameter (`ConfigureWifi` joins an open
+/// network when no password is given), and a step that carries it is refused.
+const CREDENTIAL_PARAMS_WITHOUT_ENTRY: &[(&str, &str)] = &[("ConfigureWifi", "password")];
 
 fn requires_unavailable_credential_entry(action: &str) -> bool {
     CREDENTIAL_ACTIONS_WITHOUT_ENTRY.contains(&action)
+}
+
+/// The first credential parameter `params` carries that the planner cannot accept.
+fn forbidden_credential_param(action: &str, params: &serde_json::Value) -> Option<&'static str> {
+    CREDENTIAL_PARAMS_WITHOUT_ENTRY
+        .iter()
+        .find(|(a, p)| *a == action && params.get(*p).is_some())
+        .map(|(_, p)| *p)
 }
 
 /// Should `action` be offered on the detected distribution?
@@ -607,7 +620,7 @@ pub fn propose_plan_tool_def(hint: Option<&sysknife_types::DistroHint>) -> ToolD
                             },
                             "params": {
                                 "type": "string",
-                                "description": "Action parameters as a JSON string. Use \"{}\" only for no-param actions (see action description). For all others include EXACT key names — the daemon rejects unknown keys.\n• Flatpak (username is REQUIRED, use key 'username' not 'user'):\n  InstallFlatpak: {\"username\":\"alice\",\"app_id\":\"org.mozilla.firefox\",\"remote\":\"flathub\"}\n  RemoveFlatpak / GetFlatpakAppInfo: {\"username\":\"alice\",\"app_id\":\"org.mozilla.firefox\"}\n  UpdateFlatpak: {\"username\":\"alice\"} or {\"username\":\"alice\",\"app_id\":\"org.mozilla.firefox\"}\n  ListInstalledFlatpaks / ListFlatpakRemotes: {\"username\":\"alice\"}\n  SearchFlatpakApps: {\"term\":\"firefox\"}\n  AddFlatpakRemote: {\"username\":\"alice\",\"remote\":\"flathub\",\"url\":\"https://...\"}\n  RemoveFlatpakRemote: {\"username\":\"alice\",\"remote\":\"flathub\"}\n• Containers/Toolbox (all require username):\n  ListContainers / ListToolboxes: {\"username\":\"alice\"}\n  CreateContainer: {\"username\":\"alice\",\"name\":\"mybox\",\"image\":\"ubuntu:22.04\"}\n  Start/Stop/Remove/GetContainerInfo: {\"username\":\"alice\",\"name\":\"mybox\"}\n  CreateToolbox: {\"username\":\"alice\",\"name\":\"mybox\"} (image/release optional)\n  RemoveToolbox: {\"username\":\"alice\",\"name\":\"mybox\"}\n• Services: {\"unit\":\"sshd.service\"} for Start/Stop/Restart/Reload/Mask/Unmask/GetLogs/GetStatus\n  SetServiceEnabled: {\"unit\":\"sshd.service\",\"enabled\":true}\n• SSH: GetAuthorizedKeys: {\"username\":\"alice\"}\n  Add/RemoveAuthorizedKey: {\"username\":\"alice\",\"public_key\":\"ssh-ed25519 AAAA... comment\"}\n• Users: CreateUser: {\"username\":\"alice\"} (shell/home optional); DeleteUser: {\"username\":\"alice\"}\n  AddUserToGroup/RemoveUserFromGroup: {\"username\":\"alice\",\"group\":\"wheel\"}\n• Identity: SetHostname: {\"hostname\":\"myhost\"}; SetTimezone: {\"timezone\":\"America/Chicago\"}\n  SetLocale: {\"locale\":\"en_US.UTF-8\"}; SetNtp: {\"enabled\":true}\n• Layering: AddLayeredPackage/RemoveLayeredPackage/RemoveBasePackage: {\"package\":\"vim\"}\n  InstallPackages/RemovePackages: {\"packages\":[\"vim\",\"git\"]}\n  ReplaceLayeredPackage: {\"old\":\"vim\",\"new\":\"vim-enhanced\"}\n  PinDeployment/UnpinDeployment: {\"index\":0}\n  RebaseSystem: {\"target_ref\":\"fedora/40/x86_64/silverblue\"}\n  SetKernelArguments: {\"add\":[\"quiet\"],\"remove\":[\"rhgb\"]}\n• Repos: AddPackageRepository: {\"repo_id\":\"epel\",\"repo_url\":\"https://...\"}\n  Remove/Enable/DisablePackageRepository: {\"repo_id\":\"epel\"}\n• Network: ConfigureFirewall: {\"zone\":\"public\",\"service\":\"ssh\",\"enabled\":true}\n  SetDnsServers: {\"interface\":\"wlp1s0\",\"servers\":[\"1.1.1.1\"]}\nIMPORTANT: Extract parameter values verbatim from intent. Never omit required fields. Never guess key names — use exact names from the action description."
+                                "description": "Action parameters as a JSON string. Use \"{}\" only for no-param actions (see action description). For all others include EXACT key names — the daemon rejects unknown keys.\n• Flatpak (username is REQUIRED, use key 'username' not 'user'):\n  InstallFlatpak: {\"username\":\"alice\",\"app_id\":\"org.mozilla.firefox\",\"remote\":\"flathub\"}\n  RemoveFlatpak / GetFlatpakAppInfo: {\"username\":\"alice\",\"app_id\":\"org.mozilla.firefox\"}\n  UpdateFlatpak: {\"username\":\"alice\"} or {\"username\":\"alice\",\"app_id\":\"org.mozilla.firefox\"}\n  ListInstalledFlatpaks / ListFlatpakRemotes: {\"username\":\"alice\"}\n  SearchFlatpakApps: {\"term\":\"firefox\"}\n  AddFlatpakRemote: {\"username\":\"alice\",\"remote\":\"flathub\",\"url\":\"https://...\"}\n  RemoveFlatpakRemote: {\"username\":\"alice\",\"remote\":\"flathub\"}\n• Containers/Toolbox (all require username):\n  ListContainers / ListToolboxes: {\"username\":\"alice\"}\n  CreateContainer: {\"username\":\"alice\",\"name\":\"mybox\",\"image\":\"ubuntu:22.04\"}\n  Start/Stop/Remove/GetContainerInfo: {\"username\":\"alice\",\"name\":\"mybox\"}\n  CreateToolbox: {\"username\":\"alice\",\"name\":\"mybox\"} (image/release optional)\n  RemoveToolbox: {\"username\":\"alice\",\"name\":\"mybox\"}\n• Services: {\"unit\":\"sshd.service\"} for Start/Stop/Restart/Reload/Mask/Unmask/GetLogs/GetStatus\n  SetServiceEnabled: {\"unit\":\"sshd.service\",\"enabled\":true}\n• SSH: GetAuthorizedKeys: {\"username\":\"alice\"}\n  Add/RemoveAuthorizedKey: {\"username\":\"alice\",\"public_key\":\"ssh-ed25519 AAAA... comment\"}\n• Users: CreateUser: {\"username\":\"alice\"} (shell/home optional); DeleteUser: {\"username\":\"alice\"}\n  AddUserToGroup/RemoveUserFromGroup: {\"username\":\"alice\",\"group\":\"wheel\"}\n• Identity: SetHostname: {\"hostname\":\"myhost\"}; SetTimezone: {\"timezone\":\"America/Chicago\"}\n  SetLocale: {\"locale\":\"en_US.UTF-8\"}; SetNtp: {\"enabled\":true}\n• Layering: AddLayeredPackage/RemoveLayeredPackage/RemoveBasePackage: {\"package\":\"vim\"}\n  InstallPackages/RemovePackages: {\"packages\":[\"vim\",\"git\"]}\n  ReplaceLayeredPackage: {\"old\":\"vim\",\"new\":\"vim-enhanced\"}\n  PinDeployment/UnpinDeployment: {\"index\":0}\n  RebaseSystem: {\"target_ref\":\"fedora/40/x86_64/silverblue\"}\n  SetKernelArguments: {\"add\":[\"quiet\"],\"remove\":[\"rhgb\"]}\n• Repos: AddPackageRepository: {\"repo_id\":\"epel\",\"repo_url\":\"https://...\"}\n  Remove/Enable/DisablePackageRepository: {\"repo_id\":\"epel\"}\n• Network: ConfigureFirewall: {\"zone\":\"public\",\"service\":\"ssh\",\"enabled\":true}\n  ConfigureWifi (open networks only, never a password): {\"ssid\":\"CafeGuest\"}; SetDnsServers: {\"interface\":\"wlp1s0\",\"servers\":[\"1.1.1.1\"]}\nIMPORTANT: Extract parameter values verbatim from intent. Never omit required fields. Never guess key names — use exact names from the action description."
                             }
                         },
                         "required": ["action_name", "summary", "risk_level", "params"]
@@ -724,6 +737,14 @@ pub fn parse_proposed_plan(intent: &str, input: &serde_json::Value) -> Result<Pl
             Some(v) => v.clone(),
             None => serde_json::Value::Object(serde_json::Map::new()),
         };
+
+        // Checked on the normalised object, so a strict-mode provider's
+        // string-encoded params cannot carry a credential past the fence.
+        if let Some(param) = forbidden_credential_param(action_name_str, &params) {
+            return Err(PlanningError::InvalidPlanOutput(format!(
+                "step {i}: '{action_name_str}' param '{param}' is a credential, and the planner has no entry channel for one"
+            )));
+        }
 
         steps.push(PlanStep::new(
             action_name,
@@ -1040,6 +1061,12 @@ mod tests {
                 "ConfigureWifi",
                 serde_json::json!({"ssid":"test-network","password":"test-only-value"}),
             ),
+            // Strict-mode providers send params as a JSON string. The fence has
+            // to see the normalised object, not the raw string.
+            (
+                "ConfigureWifi",
+                serde_json::json!(r#"{"ssid":"test-network","password":"test-only-value"}"#),
+            ),
         ] {
             let input = serde_json::json!({
                 "summary": "test",
@@ -1066,6 +1093,38 @@ mod tests {
                 offered.iter().any(|name| name == action),
                 "{action} withheld"
             );
+        }
+    }
+
+    #[test]
+    fn open_wifi_is_offered_and_accepted_without_a_password() {
+        let ubuntu = sysknife_types::DistroHint {
+            id: "ubuntu".into(),
+            family: DISTRO_FAMILY_DEBIAN,
+            version: None,
+        };
+        for def in [
+            propose_plan_tool_def(None),
+            propose_plan_tool_def(Some(&ubuntu)),
+        ] {
+            assert!(
+                offered_actions(&def)
+                    .iter()
+                    .any(|name| name == "ConfigureWifi"),
+                "ConfigureWifi must stay available for open networks"
+            );
+        }
+        for params in [
+            serde_json::json!({"ssid":"open-network"}),
+            serde_json::json!(r#"{"ssid":"open-network"}"#),
+        ] {
+            let input = serde_json::json!({
+                "summary": "join the open network",
+                "explanation": "connects to an open Wi-Fi network",
+                "steps": [{"action_name":"ConfigureWifi","summary":"connect","risk_level":"medium","params":params}]
+            });
+            let plan = parse_proposed_plan("join open-network", &input).unwrap();
+            assert_eq!(plan.steps()[0].action_name(), "ConfigureWifi");
         }
     }
 
@@ -1098,13 +1157,14 @@ mod tests {
                     _ => depth == 0,
                 })
                 .collect();
-            let has_credential_param = names
+            for word in names
                 .split(|c: char| !c.is_ascii_alphanumeric() && c != '_')
-                .any(|word| credential_names.contains(&word));
-            if has_credential_param {
+                .filter(|word| credential_names.contains(word))
+            {
                 assert!(
-                    requires_unavailable_credential_entry(action),
-                    "{action} names a credential parameter but is offered to the planner"
+                    requires_unavailable_credential_entry(action)
+                        || CREDENTIAL_PARAMS_WITHOUT_ENTRY.contains(&(action, word)),
+                    "{action} names credential parameter '{word}' but the planner would accept it"
                 );
             }
         }

@@ -444,7 +444,7 @@ CreateLogicalVolume, CreateLvSnapshot, SetServiceResourceLimits
 
 RebootSystem,
 MaskService,
-SetDnsServers,
+ConfigureWifi, SetDnsServers,
 CreateUser,
 AddUserToGroup, RemoveUserFromGroup, DeleteUser,
 AddAuthorizedKey, RemoveAuthorizedKey,
@@ -585,6 +585,7 @@ Use `"username"` as the key — NOT `"user"`.
 - `SetNtp`: `{"enabled":true}`
 
 **Network**:
+- `ConfigureWifi`: `{"ssid":"CafeGuest"}` (open networks only; a step with a `password` is refused)
 - `SetDnsServers`: `{"interface":"wlp1s0","servers":["1.1.1.1","8.8.8.8"]}` —
   uses NetworkManager via `nmcli`. **Prefer `ResolvectlSetDns` (below) for
   setting DNS servers**: it works regardless of network backend
@@ -617,8 +618,9 @@ const CONSTRAINTS: &str = r#"
 - Never suggest raw shell commands or free-form execution.
 - Never generate RunCommand, ExecuteScript, or any action not in the list.
 - No credential entry or reference resolver is available in this planner. Refuse
-  requests to attach an Ubuntu Pro subscription or configure a Wi-Fi connection;
-  never ask the operator to put a subscription token or Wi-Fi password in an intent.
+  requests to attach an Ubuntu Pro subscription or to join a password-protected
+  Wi-Fi network; `ConfigureWifi` is for open networks only. Never ask the
+  operator to put a subscription token or Wi-Fi password in an intent.
 - Never include secrets, passwords, or API keys as literal values in params.
 - Keep step summaries and explanations in plain user-facing language.
 - If the intent is ambiguous, choose the most conservative interpretation (prefer read-only actions, prefer fewer steps).
@@ -1206,7 +1208,14 @@ mod tests {
         for hint in [None, Some(debian_hint()), Some(fedora_hint())] {
             let prompt = build_system_prompt(None, hint.as_ref());
             assert!(!prompt.contains("ProAttach"));
-            assert!(!prompt.contains("ConfigureWifi"));
+            assert!(
+                prompt.contains("ConfigureWifi"),
+                "open Wi-Fi stays available"
+            );
+            assert!(
+                !prompt.contains(r#""ssid":"MyNetwork","password""#),
+                "the prompt must not show a Wi-Fi password example"
+            );
             assert!(prompt.contains("No credential entry or reference resolver"));
         }
         let debian = build_system_prompt(None, Some(&debian_hint()));
