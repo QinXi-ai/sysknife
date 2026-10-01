@@ -37,6 +37,20 @@ Releases before `0.2.5` predate the public launch; their notes live in the
 
 ### Fixed
 
+- **`sysknife_audit_verify` checks the configured checkpoint anchor, and agrees
+  with `sysknife audit verify` on the verdict.**
+  ([#496](https://github.com/lacs-project/sysknife/pull/496)) The MCP tool
+  never looked up the anchor, so a chain truncated behind a configured
+  checkpoint reported `intact`, and an erased store with no anchor did too after
+  the CLI had started calling that inconclusive in 0.17.0. The tool now reads the
+  anchor on its live path, and both surfaces share
+  `combined_verification_exit_code`, `status_word` and the anchor JSON instead
+  of keeping two copies of the precedence rule. A stdio test drives
+  `tools/call sysknife_audit_verify` against a store whose anchor cannot be read,
+  and fails with the lookup removed (closes
+  [#466](https://github.com/lacs-project/sysknife/issues/466) and
+  [#478](https://github.com/lacs-project/sysknife/issues/478)). Thanks to
+  [@LunaMeerkats](https://github.com/LunaMeerkats).
 - **`sysknife-setup --uninstall` removes the editor files it wrote, and only
   those.** ([#539](https://github.com/lacs-project/sysknife/pull/539))
   Uninstall left `.cursor/mcp.json`, the SysKnife block in
@@ -70,6 +84,24 @@ Releases before `0.2.5` predate the public launch; their notes live in the
 
 ### Documented
 
+- **`docs/cli.md` describes the unattended flag the binary ships.**
+  ([#436](https://github.com/lacs-project/sysknife/pull/436))
+  `--dangerously-skip-approval` raises the ceiling `--yes` is clamped to from
+  MEDIUM to HIGH and switches on nothing else; the page had said it implied
+  `--yes`, `--max-risk high` and `--non-interactive`. The page also gains
+  `SYSKNIFE_DATABASE_PATH`, says audit commands read the store directly and
+  ignore `SYSKNIFE_SOCKET`, that the consent check covers every subcommand, and
+  that `--log-to` captures stdout only (closes
+  [#336](https://github.com/lacs-project/sysknife/issues/336)). Thanks to
+  [@armutlutost](https://github.com/armutlutost).
+- **Contributors without the GUI libraries know which gate governs them.**
+  ([#457](https://github.com/lacs-project/sysknife/pull/457))
+  `CONTRIBUTING.md`'s fallback now takes precedence over the pre-commit gate in
+  `CLAUDE.md` when the GUI libraries are missing, and both files say what
+  `scripts/ci-local.sh --no-postgres` skips, which is the Postgres contract and
+  nothing else (closes
+  [#451](https://github.com/lacs-project/sysknife/issues/451)). Thanks to
+  [@Jah-yee](https://github.com/Jah-yee).
 - **`sysknife doctor` is documented as doing what it does.**
   ([#517](https://github.com/lacs-project/sysknife/pull/517))
   `docs/configuration.md` promised a chain-integrity check, and `run_doctor`
