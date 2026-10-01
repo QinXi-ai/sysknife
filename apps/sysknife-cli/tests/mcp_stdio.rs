@@ -12,10 +12,16 @@
 //! `tools/list`. It needs no daemon: the tool catalogue is registered
 //! statically by `#[tool_router]`.
 
+use std::ffi::OsStr;
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use std::sync::mpsc;
+use std::sync::Arc;
 use std::time::Duration;
+use sysknife_daemon::audit_chain::AuditKey;
+use sysknife_daemon::auth::CallerPrincipal;
+use sysknife_daemon::transactions::{NewTransaction, TransactionStore};
+use sysknife_types::{CallerRole, RiskLevel};
 
 /// Cap on how long to wait for any single response frame. Generous enough for
 /// a cold process start under a loaded CI runner, short enough that a hang is
@@ -35,7 +41,15 @@ struct McpChild {
 
 impl McpChild {
     fn spawn() -> Self {
-        let mut child = Command::new(env!("CARGO_BIN_EXE_sysknife"))
+        Self::spawn_with_env(&[])
+    }
+
+    /// `spawn`, with extra variables set on the child alone. Setting them on
+    /// this process instead would race every other test in the binary that
+    /// reads the same variables.
+    fn spawn_with_env(envs: &[(&str, &OsStr)]) -> Self {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_sysknife"));
+        command
             .arg("mcp-server")
             // Point at a socket that cannot exist. `tools/list` never touches
             // the daemon, and this makes sure the test is not quietly relying
@@ -43,9 +57,11 @@ impl McpChild {
             .env("SYSKNIFE_SOCKET", "/nonexistent/sysknife-mcp-test.sock")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .spawn()
-            .expect("spawn sysknife mcp-server");
+            .stderr(Stdio::null());
+        for (name, value) in envs {
+            command.env(name, value);
+        }
+        let mut child = command.spawn().expect("spawn sysknife mcp-server");
 
         let stdin = child.stdin.take().expect("piped stdin");
         let stdout: ChildStdout = child.stdout.take().expect("piped stdout");
@@ -292,5 +308,87 @@ fn resources_read_answers_complete_and_advertises_no_cache_directive() {
     assert!(
         !contents.is_empty(),
         "a completed read must carry at least one content item: {read}"
+    );
+}
+
+/// `sysknife_audit_verify` has to read the configured checkpoint anchor on the
+/// live tool path, not only inside `outcome_to_report`. The unit tests hand
+/// that function an anchor they build themselves, so removing the
+/// `verify_configured_anchor` call from `audit_verify_local_store` left every
+/// one of them green while the tool went back to reporting `intact` with no
+/// anchor checked, which is what #478 was filed about.
+///
+/// The anchor here is configured and unreadable, the fixture
+/// `audit_verify_exit_code_prefers_broken_chain_to_inconclusive_anchor` uses
+/// for the CLI: a tool that looked answers `cannot_verify`, and one that did not
+/// look answers `intact`.
+#[test]
+fn audit_verify_over_stdio_checks_the_configured_anchor() {
+    let dir = tempfile::tempdir().expect("create MCP fixture directory");
+    let db_path = dir.path().join("daemon.sqlite");
+    let key_path = dir.path().join("audit-key");
+    let key = AuditKey::load_or_generate(&key_path).expect("generate audit key");
+    let store =
+        TransactionStore::open_with_key(&db_path, Arc::new(key)).expect("create audit store");
+    store
+        .record(NewTransaction {
+            request_id: "mcp-anchor-lookup".to_string(),
+            request_hash: "mcp-anchor-lookup-hash".to_string(),
+            action_name: "UpdateSystem".to_string(),
+            risk_level: RiskLevel::High,
+            summary: "Upgrade the system".to_string(),
+            warnings: vec![],
+            caller_role: CallerRole::Dev,
+            caller_principal: CallerPrincipal::Uid(1000),
+        })
+        .expect("record audit row");
+    drop(store);
+
+    let mut server = McpChild::spawn_with_env(&[
+        ("SYSKNIFE_DATABASE_PATH", db_path.as_os_str()),
+        ("SYSKNIFE_AUDIT_KEY_PATH", key_path.as_os_str()),
+        ("SYSKNIFE_CHECKPOINT_DB", OsStr::new("not-a-postgres-url")),
+        ("HOME", dir.path().as_os_str()),
+        ("XDG_CONFIG_HOME", dir.path().as_os_str()),
+    ]);
+    server.send(&serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "initialize",
+        "params": {
+            "protocolVersion": "2025-06-18",
+            "capabilities": {},
+            "clientInfo": { "name": "sysknife-stdio-test", "version": "0" }
+        }
+    }));
+    let init = server.recv_response();
+    assert!(
+        init.get("error").is_none(),
+        "initialize returned an error: {init}"
+    );
+    server.send(&serde_json::json!({
+        "jsonrpc": "2.0",
+        "method": "notifications/initialized"
+    }));
+    server.send(&serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 2,
+        "method": "tools/call",
+        "params": { "name": "sysknife_audit_verify", "arguments": {} }
+    }));
+
+    let called = server.recv_response();
+    assert!(
+        called.get("error").is_none(),
+        "tools/call returned an error: {called}"
+    );
+    let report = &called["result"]["structuredContent"];
+    assert_eq!(
+        report["audit_anchor"]["configured"], true,
+        "sysknife_audit_verify did not look for the configured anchor: {report}"
+    );
+    assert_eq!(
+        report["status"], "cannot_verify",
+        "an unreadable configured anchor must make the verdict inconclusive: {report}"
     );
 }

@@ -315,6 +315,34 @@ fn anchor_json(outcome: &CheckpointOutcome) -> serde_json::Value {
     })
 }
 
+/// The machine-readable anchor field shared by the CLI and MCP reports.
+///
+/// Keeping this shape next to the combined verdict prevents the two public
+/// audit surfaces from drifting when anchor handling changes.
+pub(crate) fn audit_anchor_json(anchor: Option<&CheckpointOutcome>) -> serde_json::Value {
+    match anchor {
+        Some(outcome) => anchor_json(outcome),
+        None => json!({"configured": false, "caveat": anchor_caveat()}),
+    }
+}
+
+/// Describe an anchor check that could not start because chain verification
+/// stopped before a verifier was available.
+pub(crate) fn unchecked_audit_anchor_json(reason: &str) -> serde_json::Value {
+    let configured = std::env::var("SYSKNIFE_CHECKPOINT_DB")
+        .ok()
+        .is_some_and(|value| !value.trim().is_empty());
+    if configured {
+        json!({
+            "configured": true,
+            "status": "cannot_verify",
+            "detail": format!("ANCHOR NOT CHECKED: {reason}"),
+        })
+    } else {
+        audit_anchor_json(None)
+    }
+}
+
 fn anchor_caveat() -> &'static str {
     "NOTE: no independent checkpoint anchor is configured, so removal of the \
          newest rows would not be detectable — a truncated chain still verifies. \
@@ -364,18 +392,16 @@ fn unattended_marker_present(warnings: &[String]) -> bool {
 // since_to_hours
 // ---------------------------------------------------------------------------
 
-/// Parse an RFC 3339 / ISO-8601 UTC datetime string and return the number of
+/// Parse an ISO-8601 datetime or calendar date and return the number of
 /// whole hours that have elapsed since that moment.
 ///
-/// Returns `None` when:
-/// - the string is not a valid UTC timestamp (`Z` or `+00:00` suffix),
-/// - the datetime is in the future, or
-/// - the value is too large to fit in `u32`.
+/// Datetimes may use Z or an explicit UTC offset. A bare YYYY-MM-DD is
+/// interpreted as midnight UTC on that date.
 ///
-/// Sub-second precision (`.NNN`) is accepted and truncated.  Non-zero UTC
-/// offsets are not supported and return `None`.
+/// Returns None when the value is invalid, in the future, or too large to
+/// fit in u32.
 pub fn since_to_hours(s: &str) -> Option<u32> {
-    let epoch = rfc3339_to_unix(s)?;
+    let epoch = iso8601_to_unix(s)?;
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .ok()?
@@ -386,64 +412,15 @@ pub fn since_to_hours(s: &str) -> Option<u32> {
     u32::try_from((now - epoch) / 3600).ok()
 }
 
-/// Parse a UTC RFC 3339 string to seconds since Unix epoch (no external dep).
-///
-/// Supports `YYYY-MM-DDThh:mm:ssZ` and `YYYY-MM-DDThh:mm:ss+00:00`.
-/// Sub-second fractions are stripped.
-///
-/// Uses Howard Hinnant's civil day algorithm to convert a proleptic-Gregorian
-/// date to a day count, then scales to seconds.
-fn rfc3339_to_unix(s: &str) -> Option<i64> {
-    let s = s.strip_suffix('Z').or_else(|| s.strip_suffix("+00:00"))?;
-
-    // Split on the 'T' separator.
-    let (date_part, time_and_frac) = s.split_once('T')?;
-
-    // Drop sub-second fractions: keep only up to "hh:mm:ss".
-    let time_part = &time_and_frac[..time_and_frac.find('.').unwrap_or(time_and_frac.len())];
-    if time_part.len() < 8 {
-        return None;
+fn iso8601_to_unix(s: &str) -> Option<i64> {
+    if let Ok(datetime) = chrono::DateTime::parse_from_rfc3339(s) {
+        return Some(datetime.timestamp());
     }
 
-    // Parse date components.
-    let mut date_iter = date_part.splitn(4, '-');
-    let y: i64 = date_iter.next()?.parse().ok()?;
-    let m: i64 = date_iter.next()?.parse().ok()?;
-    let d: i64 = date_iter.next()?.parse().ok()?;
-    if date_iter.next().is_some() {
-        return None; // extra segments → reject
-    }
-
-    // Parse time components.
-    let mut time_iter = time_part.splitn(4, ':');
-    let h: i64 = time_iter.next()?.parse().ok()?;
-    let mn: i64 = time_iter.next()?.parse().ok()?;
-    let sec: i64 = time_iter.next()?.parse().ok()?;
-    if time_iter.next().is_some() {
-        return None; // extra segments → reject
-    }
-
-    // Range validation.
-    if !(1..=12).contains(&m) || !(1..=31).contains(&d) || h > 23 || mn > 59 || sec > 60
-    // allow leap second
-    {
-        return None;
-    }
-
-    // Howard Hinnant's civil_from_days: compute days since 1970-01-01.
-    //
-    // Reference: https://howardhinnant.github.io/date_algorithms.html
-    // The civil epoch starts on 0000-03-01; shift y back by 1 for Jan/Feb so
-    // Feb 29 falls at the end of its civil year.
-    let z = if m > 2 { y } else { y - 1 };
-    let era = (if z >= 0 { z } else { z - 399 }) / 400;
-    let yoe = z - era * 400; // year-of-era [0, 399]
-    let m_adj = if m > 2 { m - 3 } else { m + 9 }; // month-of-civil-year [0, 11]
-    let doy = (153 * m_adj + 2) / 5 + d - 1; // day-of-year from Mar 1
-    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy; // day-of-era
-    let days = era * 146097 + doe - 719468; // days since 1970-01-01
-
-    Some(days * 86_400 + h * 3600 + mn * 60 + sec)
+    chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d")
+        .ok()?
+        .and_hms_opt(0, 0, 0)
+        .map(|datetime| datetime.and_utc().timestamp())
 }
 
 // ---------------------------------------------------------------------------
@@ -525,10 +502,60 @@ fn daemon_risk_within_approved(approved: &PlanRiskLevel, daemon: &PlanRiskLevel)
     daemon <= approved
 }
 
+/// The stderr payload for an approval prompt, or a refusal when the operator
+/// would not have seen the whole proposed change.
+///
+/// `sysknife approve` rendered the change through the capped block renderer,
+/// printed it, and prompted. The renderer marked what it had dropped and the
+/// prompt accepted anyway, so a receipt could be taken on a change the operator
+/// had seen the first forty lines of, or whose 4 KB path list had been cut at
+/// 512 characters. The receipt proved a human typed a word. It did not prove a
+/// human read the change, which is the only thing it is for.
+///
+/// Refusing costs the operator one flag and shows them everything. Nothing
+/// becomes unapprovable.
+///
+/// Layout differs by view on purpose. The caps exist so a long change cannot
+/// scroll the action name and risk level off the screen before the answer; forty
+/// lines cannot do that, so the capped view prints the context first and reads
+/// naturally. The full view has no cap, so the context goes *after* the block
+/// and is the last thing on screen however long the change is. That ordering is
+/// what makes an uncapped render safe here and nowhere else.
+fn approval_view(
+    context: &str,
+    pretty: &str,
+    transaction_id: &TransactionId,
+    full: bool,
+) -> Result<String, CliError> {
+    if full {
+        let block = crate::operator_text::operator_safe_block_full(pretty);
+        return Ok(format!(
+            "Proposed change (complete):\n{}\n\n{}",
+            block.text(),
+            context
+        ));
+    }
+    let block = crate::operator_text::operator_safe_block(pretty);
+    if !block.is_complete() {
+        let shortened = block.shortened_lines();
+        return Err(CliError::ApprovalViewIncomplete {
+            transaction_id: transaction_id.as_str().to_string(),
+            withheld: block.withheld_lines(),
+            shortened_note: if shortened == 0 {
+                String::new()
+            } else {
+                format!(", and {shortened} shown line(s) were cut short")
+            },
+        });
+    }
+    Ok(format!("{}\nProposed change:\n{}", context, block.text()))
+}
+
 pub async fn run_approve(
     transaction_id: &TransactionId,
     socket: SocketTarget,
     json: bool,
+    full: bool,
     log: &Logger,
 ) -> Result<(), CliError> {
     if !std::io::stdin().is_terminal() {
@@ -536,21 +563,27 @@ pub async fn run_approve(
     }
     let client = DaemonClient::new(socket);
     let details = client.approval_details(transaction_id).await?;
-    log.print_stderr(&format!(
-        "Action:  {}\nRisk:    {:?}\nSummary: {}\nProposed change:\n{}",
+    // `to_string_pretty` is not a sanitiser: it escapes C0 controls but emits
+    // U+202E and U+200B literally. The proposed change is the authoritative
+    // statement of what will happen, the one string on screen that must not be
+    // able to lie about its own target.
+    let pretty = serde_json::to_string_pretty(&details.preview.proposed_change)
+        .unwrap_or_else(|_| "<unavailable>".to_string());
+    // The decision context: action, risk and summary. Printed before the block
+    // in the capped view, where forty lines cannot scroll it away, and after the
+    // block in the full view, where an unbounded block could.
+    let context = format!(
+        "Action:  {}\nRisk:    {:?}\nSummary: {}",
         details.action_name,
         details.preview.risk_level,
         crate::operator_text::operator_safe(&details.preview.summary),
-        // `to_string_pretty` is not a sanitiser: it escapes C0 controls but
-        // emits U+202E and U+200B literally. This is the last thing printed
-        // before the operator is asked to approve, and the proposed change is
-        // the authoritative statement of what will happen — the one string on
-        // screen that must not be able to lie about its own target.
-        crate::operator_text::operator_safe_block(
-            &serde_json::to_string_pretty(&details.preview.proposed_change)
-                .unwrap_or_else(|_| "<unavailable>".to_string())
-        )
-    ));
+    );
+
+    // One call produces the text and decides whether it may be shown at all, so
+    // there is no way to print an approval view without having asked. An earlier
+    // shape printed the block and then returned the refusal, which left the
+    // print ungated: deleting the check still compiled and still printed.
+    log.print_stderr(&approval_view(&context, &pretty, transaction_id, full)?);
     let approved = if details.preview.risk_level == RiskLevel::High {
         prompt_exact(
             "High-risk action. Type the exact action name to approve",
@@ -751,10 +784,10 @@ pub async fn run_history(
         None => None,
         Some(s) => {
             // Distinguish the two failure modes so the user knows how to fix each.
-            if rfc3339_to_unix(s).is_none() {
+            if iso8601_to_unix(s).is_none() {
                 return Err(CliError::ConfigOrDaemon(format!(
-                    "--since: {s:?} is not a valid UTC RFC 3339 timestamp \
-                     (accepted formats: 2026-01-15T10:30:00Z or 2026-01-15T10:30:00+00:00)"
+                    "--since: {s:?} is not a valid ISO-8601 date or datetime \
+                     (accepted formats: 2026-01-15, 2026-01-15T10:30:00Z, or 2026-01-15T12:30:00+02:00)"
                 )));
             }
             match since_to_hours(s) {
@@ -1144,7 +1177,7 @@ pub async fn run_audit_checkpoint(
 /// Anchoring is SQLite-only today (`sysknife audit checkpoint` opens a
 /// `TransactionStore`), so a Postgres deployment gets an explicit "not
 /// supported" rather than a silent skip that would read as coverage.
-async fn verify_configured_anchor(
+pub(crate) async fn verify_configured_anchor(
     lacs_config: &sysknife_core::config::LacsConfig,
     db_path: &std::path::Path,
     verifier: &Verifier,
@@ -1498,10 +1531,7 @@ fn emit_verification(
             "backend": backend_label,
             "chain": outcome_json(&verification.chain),
             "approval_events": outcome_json(&verification.events),
-            "audit_anchor": match anchor {
-                Some(outcome) => anchor_json(outcome),
-                None => json!({"configured": false, "caveat": anchor_caveat()}),
-            },
+            "audit_anchor": audit_anchor_json(anchor),
             "daemon_socket_caveat": resolve_daemon_socket_caveat(),
             // Null rather than zero when no census was taken. A machine reader
             // that alerts on low attribution must be able to tell "no rows were
@@ -1637,7 +1667,7 @@ fn empty_unanchored_chain(
 /// precedence as [`AuditVerification::exit_code`]. A detected break is stronger
 /// evidence than a different check being inconclusive, so exit code `1` must
 /// outrank `2` rather than relying on numeric ordering.
-fn combined_verification_exit_code(
+pub(crate) fn combined_verification_exit_code(
     verification: &AuditVerification,
     anchor: Option<&CheckpointOutcome>,
 ) -> i32 {
@@ -1656,7 +1686,7 @@ fn combined_verification_exit_code(
     }
 }
 
-fn status_word(exit_code: i32) -> &'static str {
+pub(crate) fn status_word(exit_code: i32) -> &'static str {
     match exit_code {
         0 => "intact",
         1 => "broken",
@@ -2239,6 +2269,97 @@ async fn prompt_exact(msg: &str, expected: &str) -> bool {
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod approval_view_tests {
+    use super::*;
+
+    fn tx() -> TransactionId {
+        TransactionId::new("tx-abc123")
+    }
+
+    fn context() -> String {
+        "Action:  InstallPackages\nRisk:    Medium\nSummary: install nginx".to_string()
+    }
+
+    /// The ordinary case, unchanged: a short change prints context first and
+    /// then the block, and approval proceeds.
+    #[test]
+    fn a_change_that_fits_is_shown_and_approvable() {
+        let pretty = "{\n  \"packages\": [\n    \"nginx\"\n  ]\n}";
+        let view = approval_view(&context(), pretty, &tx(), false).expect("fits");
+        assert!(view.starts_with("Action:  InstallPackages"));
+        assert!(view.contains("\"nginx\""));
+        assert!(!view.contains("truncated"));
+    }
+
+    /// Forty-one lines. The operator would have seen forty and a marker, and
+    /// the old code prompted anyway.
+    #[test]
+    fn a_change_taller_than_the_view_is_refused_and_counted() {
+        let pretty = (0..80)
+            .map(|i| format!("  \"key{i}\": \"value{i}\""))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let err = approval_view(&context(), &pretty, &tx(), false).expect_err("must refuse");
+        let msg = err.to_string();
+        assert!(matches!(err, CliError::ApprovalViewIncomplete { withheld, .. } if withheld == 40));
+        assert!(msg.contains("40 line(s) were not shown"), "{msg}");
+        assert!(msg.contains("--full"), "{msg}");
+        assert!(msg.contains("tx-abc123"), "{msg}");
+        assert_eq!(err.exit_code(), 1);
+    }
+
+    /// One line, longer than the per-line cap. Nothing is dropped, so a
+    /// line-count check alone would pass this: the tail of a 4 KB path list is
+    /// as unseen as a dropped line.
+    #[test]
+    fn a_change_wider_than_the_view_is_refused_too() {
+        let pretty = format!("  \"paths\": \"{}\"", "/a/very/long/path".repeat(200));
+        let err = approval_view(&context(), &pretty, &tx(), false).expect_err("must refuse");
+        let msg = err.to_string();
+        assert!(matches!(err, CliError::ApprovalViewIncomplete { withheld, .. } if withheld == 0));
+        assert!(msg.contains("cut short"), "{msg}");
+    }
+
+    /// `--full` shows every line and every character, and puts the decision
+    /// context last so an unbounded block cannot scroll it away.
+    #[test]
+    fn the_full_view_shows_everything_and_ends_on_the_context() {
+        let pretty = (0..80)
+            .map(|i| format!("  \"key{i}\": \"value{i}\""))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let view =
+            approval_view(&context(), &pretty, &tx(), true).expect("full view never refuses");
+        assert!(view.contains("\"key79\""), "the last line must be present");
+        assert!(!view.contains("truncated"));
+        assert!(
+            view.trim_end().ends_with("Summary: install nginx"),
+            "the context must be the last thing on screen: {}",
+            &view[view.len().saturating_sub(120)..]
+        );
+    }
+
+    /// The full view lifts the caps and keeps every character rule. A bidi
+    /// override in the change must not survive into the terminal just because
+    /// the operator asked to see all of it.
+    #[test]
+    fn the_full_view_still_neutralises_the_text() {
+        let pretty =
+            "  \"target\": \"/etc/\u{202e}fnoc.dwssap\u{202c}\"\n  \"zero\": \"a\u{200b}b\"";
+        let view = approval_view(&context(), pretty, &tx(), true).expect("full");
+        assert!(
+            !view.contains('\u{202e}'),
+            "a bidi override reached the terminal"
+        );
+        assert!(
+            !view.contains('\u{200b}'),
+            "a zero-width character reached the terminal"
+        );
+        assert!(view.contains("/etc/"), "the legitimate text must survive");
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -3183,76 +3304,84 @@ mod tests {
     static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     // -----------------------------------------------------------------------
-    // rfc3339_to_unix — pure function, tests against known epoch values
+    // iso8601_to_unix — pure function, tests against known epoch values
     // -----------------------------------------------------------------------
 
     #[test]
     fn rfc3339_unix_epoch_z() {
-        assert_eq!(rfc3339_to_unix("1970-01-01T00:00:00Z"), Some(0));
+        assert_eq!(iso8601_to_unix("1970-01-01T00:00:00Z"), Some(0));
     }
 
     #[test]
     fn rfc3339_unix_epoch_plus00() {
-        assert_eq!(rfc3339_to_unix("1970-01-01T00:00:00+00:00"), Some(0));
+        assert_eq!(iso8601_to_unix("1970-01-01T00:00:00+00:00"), Some(0));
     }
 
     #[test]
     fn rfc3339_unix_one_day() {
-        assert_eq!(rfc3339_to_unix("1970-01-02T00:00:00Z"), Some(86_400));
+        assert_eq!(iso8601_to_unix("1970-01-02T00:00:00Z"), Some(86_400));
     }
 
     #[test]
     fn rfc3339_unix_y2k() {
         // 2000-01-01T00:00:00Z = 946684800
-        assert_eq!(rfc3339_to_unix("2000-01-01T00:00:00Z"), Some(946_684_800));
+        assert_eq!(iso8601_to_unix("2000-01-01T00:00:00Z"), Some(946_684_800));
     }
 
     #[test]
     fn rfc3339_unix_leap_day_2000() {
         // 2000-02-29: Jan has 31 days, then 28 more days = 59 days from 2000-01-01.
         // 946684800 + 59 * 86400 = 946684800 + 5097600 = 951782400
-        assert_eq!(rfc3339_to_unix("2000-02-29T00:00:00Z"), Some(951_782_400));
+        assert_eq!(iso8601_to_unix("2000-02-29T00:00:00Z"), Some(951_782_400));
     }
 
     #[test]
     fn rfc3339_unix_with_subseconds() {
         // Sub-second fraction should be stripped.
         assert_eq!(
-            rfc3339_to_unix("2000-01-01T00:00:00.123456Z"),
+            iso8601_to_unix("2000-01-01T00:00:00.123456Z"),
             Some(946_684_800)
         );
     }
 
     #[test]
-    fn rfc3339_unix_non_utc_returns_none() {
-        assert!(rfc3339_to_unix("2000-01-01T00:00:00+05:00").is_none());
+    fn iso8601_nonzero_offset_is_normalized_to_utc() {
+        assert_eq!(
+            iso8601_to_unix("2000-01-01T05:00:00+05:00"),
+            Some(946_684_800)
+        );
+    }
+
+    #[test]
+    fn iso8601_bare_date_is_midnight_utc() {
+        assert_eq!(iso8601_to_unix("2000-01-01"), Some(946_684_800));
     }
 
     #[test]
     fn rfc3339_unix_no_suffix_returns_none() {
-        assert!(rfc3339_to_unix("2000-01-01T00:00:00").is_none());
+        assert!(iso8601_to_unix("2000-01-01T00:00:00").is_none());
     }
 
     #[test]
     fn rfc3339_unix_garbage_returns_none() {
-        assert!(rfc3339_to_unix("not-a-date").is_none());
-        assert!(rfc3339_to_unix("").is_none());
+        assert!(iso8601_to_unix("not-a-date").is_none());
+        assert!(iso8601_to_unix("").is_none());
     }
 
     #[test]
     fn rfc3339_unix_invalid_month_returns_none() {
-        assert!(rfc3339_to_unix("2000-13-01T00:00:00Z").is_none());
+        assert!(iso8601_to_unix("2000-13-01T00:00:00Z").is_none());
     }
 
     #[test]
     fn rfc3339_unix_invalid_hour_returns_none() {
-        assert!(rfc3339_to_unix("2000-01-01T25:00:00Z").is_none());
+        assert!(iso8601_to_unix("2000-01-01T25:00:00Z").is_none());
     }
 
     #[test]
     fn rfc3339_unix_day_zero_returns_none() {
         // Day 0 is out of range; the lower bound of the `!(1..=31)` check.
-        assert!(rfc3339_to_unix("2000-01-00T00:00:00Z").is_none());
+        assert!(iso8601_to_unix("2000-01-00T00:00:00Z").is_none());
     }
 
     // -----------------------------------------------------------------------

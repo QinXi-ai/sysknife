@@ -1626,7 +1626,11 @@ async fn handle_approve(
     {
         return Ok(());
     }
-    let receipt = match state.audit.approve_transaction(transaction_id).await {
+    let receipt = match state
+        .audit
+        .approve_transaction(transaction_id, caller.principal())
+        .await
+    {
         Ok(receipt) => receipt,
         // A `DatabaseInvariant` here means the stored approval commitment does
         // not match the signed preview (tamper / key mismatch) — a fail-closed
@@ -1671,7 +1675,11 @@ async fn handle_approve(
     )
     .await;
     if response.is_err() {
-        if let Err(e) = state.audit.revoke_unconsumed_approval(transaction_id).await {
+        if let Err(e) = state
+            .audit
+            .revoke_unconsumed_approval(transaction_id, caller.principal())
+            .await
+        {
             eprintln!(
                 "[sysknife-daemon] failed to revoke undelivered approval for \
                  {transaction_id}: {e}"
@@ -1816,7 +1824,11 @@ async fn handle_cancel(
     {
         return Ok(());
     }
-    match state.audit.cancel_queued(transaction_id).await {
+    match state
+        .audit
+        .cancel_queued(transaction_id, caller.principal())
+        .await
+    {
         Ok(true) => {
             send_response(
                 framed,
@@ -2865,7 +2877,11 @@ async fn handle_execute(
 
     let claimed = match state
         .audit
-        .claim_approved_for_execution(transaction_id, &receipt_digest(approval_receipt))
+        .claim_approved_for_execution(
+            transaction_id,
+            &receipt_digest(approval_receipt),
+            caller.principal(),
+        )
         .await
     {
         Ok(c) => c,
@@ -4764,7 +4780,11 @@ mod tests {
         // Claim it (Queued -> Running) so it is in-flight from the store's view.
         assert!(state
             .audit
-            .claim_approved_for_execution(&transaction_id, &receipt_digest(&receipt))
+            .claim_approved_for_execution(
+                &transaction_id,
+                &receipt_digest(&receipt),
+                CallerPrincipal::Uid(1000),
+            )
             .await
             .unwrap());
 
@@ -4894,7 +4914,11 @@ mod tests {
             preview_and_approve(&mut framed, "GetMemoryInfo", json!({})).await;
         assert!(state
             .audit
-            .claim_approved_for_execution(&transaction_id, &receipt_digest(&receipt))
+            .claim_approved_for_execution(
+                &transaction_id,
+                &receipt_digest(&receipt),
+                CallerPrincipal::Uid(1000),
+            )
             .await
             .unwrap());
 
@@ -5018,6 +5042,120 @@ mod tests {
             "the row must name the account resolved for this connection, not a default"
         );
         assert_eq!(row.chain_version, crate::audit_chain::CHAIN_VERSION_CURRENT);
+    }
+
+    /// The handlers must pass the connection's own account into the event
+    /// chain, not merely accept one at the store boundary.
+    ///
+    /// The store-level tests choose the principal they hand down, so a
+    /// dispatcher that signed `Unattributed` for every grant and every consume
+    /// would pass all of them. This test drives a real connection as uid 4242
+    /// through preview -> approve -> execute and reads the signed rows back,
+    /// the same shape as `the_recorded_principal_is_the_one_the_connection_
+    /// was_attributed_to` on the transaction side.
+    #[tokio::test]
+    async fn handlers_sign_the_connection_account_into_approval_events() {
+        let dir = tempdir().unwrap();
+        let state = test_state(&dir);
+        let audit = std::sync::Arc::clone(&state.audit);
+        let (client, server) = tokio::net::UnixStream::pair().unwrap();
+        tokio::spawn(async move {
+            unix_connection_handler(
+                server,
+                state,
+                runner(),
+                uid_caller_with(4242, CallerRole::Admin),
+            )
+            .await;
+        });
+        let mut framed = FramedStream::new(client);
+        let (txid, receipt) = preview_and_approve(&mut framed, "GetMemoryInfo", json!({})).await;
+        framed
+            .send(
+                &serde_json::to_vec(&json!({
+                    "type": "execute",
+                    "request_id": "r-exec",
+                    "transaction_id": txid,
+                    "action_name": "GetMemoryInfo",
+                    "params": {},
+                    "approval_receipt": receipt
+                }))
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+        let _exec: Value = serde_json::from_slice(&framed.recv().await.unwrap()).unwrap();
+        let events = audit.fetch_event_rows().await.unwrap();
+        let event = |kind: &str| {
+            events
+                .iter()
+                .find(|e| e.kind == kind)
+                .unwrap_or_else(|| panic!("no {kind} event in {events:?}"))
+        };
+        assert_eq!(
+            event("approval_granted").caller_principal.as_deref(),
+            Some("uid:4242"),
+            "handle_approve must sign the account the connection was attributed to"
+        );
+        assert_eq!(
+            event("approval_consumed").caller_principal.as_deref(),
+            Some("uid:4242"),
+            "handle_execute must sign the account the connection was attributed to"
+        );
+        assert_eq!(
+            event("approval_granted").chain_version,
+            crate::audit_chain::EVENT_VERSION_V2
+        );
+        assert_eq!(
+            event("approval_consumed").chain_version,
+            crate::audit_chain::EVENT_VERSION_V2
+        );
+    }
+
+    /// Same guarantee on the cancel path: `handle_cancel` holds the caller, so
+    /// the `approval_revoked` row must name the cancelling account rather than
+    /// discard the identity the daemon already resolved.
+    #[tokio::test]
+    async fn cancelling_an_approved_transaction_signs_the_cancelling_account() {
+        let dir = tempdir().unwrap();
+        let state = test_state(&dir);
+        let audit = std::sync::Arc::clone(&state.audit);
+        let (client, server) = tokio::net::UnixStream::pair().unwrap();
+        tokio::spawn(async move {
+            unix_connection_handler(
+                server,
+                state,
+                runner(),
+                uid_caller_with(4242, CallerRole::Observer),
+            )
+            .await;
+        });
+        let mut framed = FramedStream::new(client);
+        let (txid, _receipt) = preview_and_approve(&mut framed, "GetMemoryInfo", json!({})).await;
+        framed
+            .send(
+                &serde_json::to_vec(&json!({
+                    "type": "cancel",
+                    "request_id": "r-cancel",
+                    "transaction_id": txid,
+                }))
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+        let response: Value = serde_json::from_slice(&framed.recv().await.unwrap()).unwrap();
+        assert_eq!(response["type"], "cancel_response", "{response}");
+        let events = audit.fetch_event_rows().await.unwrap();
+        let revoked = events
+            .iter()
+            .find(|e| e.kind == "approval_revoked")
+            .unwrap_or_else(|| panic!("no approval_revoked event in {events:?}"));
+        assert_eq!(
+            revoked.caller_principal.as_deref(),
+            Some("uid:4242"),
+            "handle_cancel must sign the account that cancelled"
+        );
+        assert_eq!(revoked.chain_version, crate::audit_chain::EVENT_VERSION_V2);
     }
 
     #[tokio::test]
@@ -5579,7 +5717,11 @@ mod tests {
         );
         assert!(state
             .audit
-            .claim_approved_for_execution(&transaction_id, &receipt_digest(&receipt))
+            .claim_approved_for_execution(
+                &transaction_id,
+                &receipt_digest(&receipt),
+                CallerPrincipal::Uid(1000),
+            )
             .await
             .unwrap());
     }
@@ -5633,7 +5775,11 @@ mod tests {
         );
         assert!(state
             .audit
-            .claim_approved_for_execution(&transaction_id, &receipt_digest(&receipt))
+            .claim_approved_for_execution(
+                &transaction_id,
+                &receipt_digest(&receipt),
+                CallerPrincipal::Uid(1000),
+            )
             .await
             .unwrap());
     }
@@ -5843,27 +5989,36 @@ mod tests {
             async fn approve_transaction(
                 &self,
                 id: &str,
+                approver: CallerPrincipal,
             ) -> Result<Option<String>, TransactionStoreError> {
-                self.0.approve_transaction(id).await
+                self.0.approve_transaction(id, approver).await
             }
             async fn revoke_unconsumed_approval(
                 &self,
                 id: &str,
+                revoker: CallerPrincipal,
             ) -> Result<bool, TransactionStoreError> {
-                self.0.revoke_unconsumed_approval(id).await
+                self.0.revoke_unconsumed_approval(id, revoker).await
             }
             async fn claim_approved_for_execution(
                 &self,
                 id: &str,
                 digest: &str,
+                executor: CallerPrincipal,
             ) -> Result<bool, TransactionStoreError> {
-                self.0.claim_approved_for_execution(id, digest).await
+                self.0
+                    .claim_approved_for_execution(id, digest, executor)
+                    .await
             }
             async fn cleanup_stale_queued(&self) -> Result<u64, TransactionStoreError> {
                 self.0.cleanup_stale_queued().await
             }
-            async fn cancel_queued(&self, id: &str) -> Result<bool, TransactionStoreError> {
-                self.0.cancel_queued(id).await
+            async fn cancel_queued(
+                &self,
+                id: &str,
+                canceller: CallerPrincipal,
+            ) -> Result<bool, TransactionStoreError> {
+                self.0.cancel_queued(id, canceller).await
             }
             async fn list_transactions(
                 &self,

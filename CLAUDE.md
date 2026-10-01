@@ -47,6 +47,14 @@ not skip or ignore the test.
 - Delete the local branch after merge.
 - Delete the worktree directory after merge.
 
+**If you cannot run the full workspace suite** because your platform lacks the
+GUI library dependencies, follow the `CONTRIBUTING.md` fallback instead: run
+`scripts/ci-local.sh --no-postgres`, copy its summary into your PR body, and
+leave the evidence files untouched. Steps that fail only because the GUI
+libraries are missing are expected; name them and the missing library, and a
+maintainer will run the full suite before merge. Do not guess evidence or edit
+metadata by hand to work around this.
+
 ## Worktree Convention
 
 - Keep worktrees outside the repo under

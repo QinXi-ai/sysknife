@@ -5,7 +5,7 @@ natural-language intent into a risk-labelled plan, asks for approval where
 needed, and streams execution output in real time.
 
 If you want SysKnife inside Claude Code / Cursor / Codex CLI instead, see
-the [main README](../README.md) and run `npx sysknife-setup`. Both paths
+the [main README](https://github.com/lacs-project/sysknife/blob/main/README.md) and run `npx sysknife-setup`. Both paths
 share the daemon, the audit chain, and the typed-action set.
 
 <img
@@ -97,10 +97,11 @@ Sample output:
 
 ```text
 ✓  daemon ok
-  socket    /run/sysknife/daemon.sock
+  socket    unix:///run/sysknife/daemon.sock
   host      my-silverblue
   provider  anthropic
   model     claude-sonnet-4-6
+  distro    fedora
 ```
 
 ---
@@ -125,7 +126,7 @@ sysknife history --status succeeded --limit 5 --since 2026-04-10T00:00:00Z
 | `--limit N` | `20` | Maximum entries to return |
 | `--status STATUS` | — | Filter by job status (`succeeded`, `failed`, `canceled`, …) |
 | `--action ACTION` | — | Filter by action name (e.g. `InstallPackages`) |
-| `--since DATETIME` | — | Only entries after this UTC RFC 3339 timestamp |
+| `--since DATETIME` | — | Only entries after this ISO-8601 date or UTC-qualified datetime |
 
 ---
 
@@ -141,6 +142,28 @@ action name.
 ```sh
 sysknife approve 018f2c9d-...
 sysknife --json approve 018f2c9d-...
+sysknife approve 018f2c9d-... --full
+```
+
+The proposed change is displayed through a bounded renderer: 40 lines, 512
+characters per line. The bounds are there so a long change cannot scroll the
+action name and risk level off the screen before you answer.
+
+When the bounds hide anything, approval is refused rather than accepted, and the
+message says how many lines were withheld and how many were cut short. Approving
+a change you were shown part of would produce a receipt proving you typed a word,
+not that you read what you agreed to.
+
+`--full` prints every line and every character, with the same neutralisation
+applied, and prints the action, risk and summary **after** the change so the
+decision context is the last thing on screen however long the change is. Pipe it
+to a pager if you like; the text cannot rewrite your terminal either way.
+
+```text
+$ sysknife approve 018f2c9d-...
+error: the proposed change does not fit the approval view: 132 line(s) were not
+shown. Approving would mean consenting to text you were not shown. Re-run with
+--full to see all of it: sysknife approve 018f2c9d-... --full
 ```
 
 Give the printed `approval_receipt` to the MCP client for that exact step. The
@@ -324,8 +347,8 @@ All flags apply to every subcommand and to free-form intents.
 | `--step-by-step` | Prompt for approval before each individual step instead of once for the whole plan.  Each prompt comes *after* that step's daemon preview is printed. |
 | `--json` | Emit NDJSON to stdout — one JSON object per event (plan, preview, result).  All colour and spinner output is suppressed.  Safe to pipe. |
 | `--timeout SECS` | Hard wall-clock limit for the CLI invocation in seconds. Stops waiting when exceeded; see exit codes below. |
-| `--log-to FILE` | Tee all stdout output to FILE in addition to the terminal.  Appends if the file exists. |
-| `--dangerously-skip-approval` | Auto-approve HIGH-risk steps as well, with no human confirmation.  Refuses to run unless `SYSKNIFE_I_ACCEPT_UNATTENDED_ROOT=1` is also set.  See [Unattended mode](#unattended-mode). |
+| `--log-to FILE` | Tee stdout to FILE in addition to the terminal. Appends if the file exists; stderr diagnostics are not captured. |
+| `--dangerously-skip-approval` | Raises the ceiling `--yes` is clamped to from MEDIUM to HIGH, so `--yes --max-risk high` approves HIGH-risk steps too. It does not switch on `--yes`, `--max-risk` or `--non-interactive`; pass them yourself. Refuses to run unless `SYSKNIFE_I_ACCEPT_UNATTENDED_ROOT=1` is also set. See [Unattended mode](#unattended-mode). |
 
 ---
 
@@ -343,13 +366,23 @@ environment variable as well:
 
 ```sh
 SYSKNIFE_I_ACCEPT_UNATTENDED_ROOT=1 \
-  sysknife --dangerously-skip-approval --json "apply pending security updates"
+  sysknife --dangerously-skip-approval --yes --max-risk high --json \
+     "apply pending security updates"
 ```
+
+`--yes` is not optional here. The flag raises the ceiling that `--yes` is
+clamped to; it does not switch auto-approval on by itself, so without `--yes`
+the run reaches the first prompt, reads EOF on a closed stdin and exits 1.
 
 Neither half is enough alone. A flag left in a script and a variable left in a
 shell profile are the two ways this gets armed by accident, and requiring both
 means neither accident is sufficient. Only the exact value `1` counts; `true`,
 `yes` and `0` are all read as unset.
+
+The consent check applies to every subcommand, including commands such as
+`doctor` and `audit export` that do not approve actions. A wrapper that always
+adds the flag must therefore also provide the environment variable. The
+unattended-mode banner is written to stderr, so structured stdout remains clean.
 
 The flag has no short form and no abbreviation. Typing it has to be a decision.
 
@@ -358,8 +391,9 @@ The flag has no short form and no abbreviation. Typing it has to be a decision.
 One thing: the approval gate.
 
 - `--yes` may now auto-approve HIGH-risk steps. The cap moves from MEDIUM to
-  HIGH.
-- The post-preview confirmation on a HIGH step no longer asks. The preview is
+  HIGH, and nothing else is switched on.
+- When `--yes` approves a HIGH step, its post-preview confirmation no longer
+  asks. The preview is
   still fetched and still printed, because it is the only record of what the
   run was about to change.
 
@@ -413,7 +447,7 @@ snapshot beforehand costs less than the alternative.
 | Code | Meaning |
 |---|---|
 | `0` | Success |
-| `1` | Plan or step **refused** — you rejected it, it exceeded the configured risk ceiling, or approval was required but the session is non-interactive |
+| `1` | Plan or step **refused** — you rejected it, it exceeded the configured risk ceiling, approval was required but the session is non-interactive, or the planner declined the request outright (distinct from a planning failure, which is `3`) |
 | `2` | **Execution failed**, a command-line usage error, or the whole-command `--timeout` expired (see below) |
 | `3` | **Planning failed** — LLM error, provider unreachable, or the intent could not be turned into a plan |
 | `4` | **Configuration or daemon error** — invalid configuration, or the daemon could not be reached |
@@ -470,7 +504,13 @@ above.
 
 | Variable | Description |
 |---|---|
-| `SYSKNIFE_SOCKET` | Daemon socket the CLI dials (`unix://`, `vsock://`, or a bare path). Falls back to the same resolution as `SYSKNIFE_LISTEN_URI`: `$XDG_RUNTIME_DIR/sysknife/daemon.sock`, then `/tmp/sysknife-$UID.sock` as a last resort. Production deployments set this via the systemd unit to `/run/sysknife/daemon.sock`. |
+| `SYSKNIFE_SOCKET` | Daemon socket the CLI dials (`unix://`, `vsock://`, or a bare path). Falls back to the same resolution as `SYSKNIFE_LISTEN_URI`: `$XDG_RUNTIME_DIR/sysknife/daemon.sock`, then `/tmp/sysknife-$UID.sock` as a last resort. Production deployments set this via the systemd unit to `/run/sysknife/daemon.sock`. Audit commands read a local database directly and do not use this socket. |
+
+### Audit database
+
+| Variable | Description |
+|---|---|
+| `SYSKNIFE_DATABASE_PATH` | SQLite audit database used by `audit export` and `audit verify`. Set this when inspecting a copied database or selecting one store on a machine with multiple deployments. |
 
 ### Unattended-mode consent
 
@@ -504,8 +544,17 @@ sysknife --yes --max-risk low --non-interactive --timeout 60 \
 # Unattended, including HIGH-risk steps. Both keys are required, and every
 # step is recorded in the signed chain as having had no human approval.
 SYSKNIFE_I_ACCEPT_UNATTENDED_ROOT=1 \
-  sysknife --dangerously-skip-approval --json --timeout 300 \
+  sysknife --dangerously-skip-approval --yes --max-risk high --json --timeout 300 \
      "apply pending security updates"
+```
+
+`--log-to` records stdout only. Capture stderr separately when the log must
+include provider notices, planning progress, and failure diagnostics:
+
+```sh
+sysknife --yes --max-risk low --non-interactive --timeout 60 \
+  --log-to /var/log/sysknife/run.log "check disk usage" \
+  2>>/var/log/sysknife/run.err
 ```
 
 The `--json` output schema:
