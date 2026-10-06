@@ -399,6 +399,10 @@ scripts/ci-local.sh --fast
 scripts/ci-local.sh --no-postgres
 ```
 
+`make check` runs the same fast subset, including the workspace test baseline
+and Clippy with all features and all targets. It does not run the full hygiene,
+security or PostgreSQL groups; use the full command above before submitting.
+
 The hygiene group discovers every `tests/release/*.test.sh` and
 `tests/e2e/*.test.sh`; there are no deliberate exclusions. A missing Postgres
 runtime/URL or `--no-postgres` produces a final **INCOMPLETE** warning naming
