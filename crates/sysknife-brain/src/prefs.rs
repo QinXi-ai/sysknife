@@ -21,12 +21,12 @@ pub const PREFS_MAX_BYTES: u64 = 10_240;
 /// as PASSWORD_MAX_DAYS. Natural language forms keep explicit passwords and
 /// labelled opaque tokens fenced.
 const SENSITIVE_PATTERNS: &[&str] = &[
-    r#"(?i)(?:^|[^\p{L}\p{N}_-])(?:[a-z0-9]+_)*(?:password|passwd|secret|api_?key|access_key|private_key|token|credential)["']?\s*[:=]\s*\S"#,
-    r"(?i)(?:^|[^\p{L}\p{N}_-])(?:password|passwd)\s+is\s+\S",
-    r#"(?i)(?:^|[^\p{L}\p{N}_-])(?:with|using)\s+(?:password|passwd|token|secret|credential)\s+(?:"[^"]+"|'[^']+'|[a-z0-9_+/-]*[0-9_+/-][a-z0-9_+/-]*(?:$|[^\p{L}\p{N}_-]))"#,
-    r"(?i)(?:^|[^\p{L}\p{N}_-])(?:[a-z0-9]+_)*(?:token|secret|credential)\s+(?:(?:is|to)\s+)?[a-z0-9_+/-]{16,}(?:$|[^\p{L}\p{N}_-])",
+    r#"(?i)(?:^|[^A-Za-z0-9_])(?:[a-z0-9]+_)*(?:password|passwd|secret|api_?key|access_key|private_key|token|credential)["']?\s*[:=]\s*\S"#,
+    r"(?i)(?:^|[^A-Za-z0-9_])(?:password|passwd)\s+is\s+\S",
+    r#"(?i)(?:^|[^A-Za-z0-9_])(?:with|using|use)\s+(?:password|passwd|token|secret|credential)\s+(?:"[^"]+"|'[^']+'|\S*[^\p{L}\s]\S*)"#,
+    r"(?i)(?:^|[^A-Za-z0-9_])(?:[a-z0-9]+_)*(?:token|secret|credential)\s+(?:(?:is|to)\s+)?[a-z0-9_+/-]{16,}(?:$|[^\p{L}\p{N}_-])",
     r"(?i)(?:^|[^\p{L}\p{N}_-])bearer\s+\S{20,}",
-    r"(?i)-----BEGIN(?: [A-Z0-9]+)* PRIVATE KEY-----",
+    r"(?i)-----BEGIN(?: [A-Z0-9]+)* PRIVATE KEY(?: BLOCK)?-----",
 ];
 
 /// Known credential formats, each with a plausible body length. Prefixes must
@@ -566,6 +566,10 @@ mod tests {
             "private_key: abc123",
             "credential = abc123",
             "my password is hunter2",
+            "run mysqldump --password=hunter2 mydb",
+            "run curl with --token=abc123def",
+            "connect with password P@ssw0rd",
+            "use password hunter2 for the backup user",
             "attach this machine to Ubuntu Pro using token test-only-value",
             "connect to Wi-Fi with password test-only-value",
             "connect using passwd hunter2",
@@ -579,6 +583,7 @@ mod tests {
             "-----BEGIN OPENSSH PRIVATE KEY-----",
             "-----BEGIN RSA PRIVATE KEY-----",
             "-----BEGIN PRIVATE KEY-----",
+            "-----BEGIN PGP PRIVATE KEY BLOCK-----",
         ] {
             assert!(contains_sensitive(text), "credential label missed: {text}");
             assert!(loggable_intent(text).contains("withheld"));
