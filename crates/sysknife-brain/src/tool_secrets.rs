@@ -66,6 +66,22 @@ pub(crate) fn redact_tool_secrets(raw: &str) -> String {
             pos = skip_space(raw, pos);
             if raw[pos..].starts_with(['=', ':']) {
                 range = value_range(raw, skip_space(raw, pos + 1));
+            } else if i >= 2
+                && &raw.as_bytes()[i - 2..i] == b"--"
+                && raw[key_end..].starts_with([' ', '\t'])
+            {
+                range = value_range(raw, skip_space(raw, key_end));
+            }
+            // A journal's generic `key: /path` describes the key file, not its
+            // contents. Explicit password/API-key labels still redact paths.
+            if key == "key"
+                && range.is_some_and(|(start, _)| {
+                    raw[start..].starts_with(['/', '~'])
+                        || raw[start..].starts_with("./")
+                        || raw[start..].starts_with("../")
+                })
+            {
+                range = None;
             }
         }
         let possible_key = KEY_PREFIXES
@@ -138,14 +154,17 @@ fn skip_space(raw: &str, pos: usize) -> usize {
 }
 
 /// Select just the value, preserving quotes and neighboring nonsecret fields.
-/// An unterminated quoted value consumes the rest rather than exposing a tail.
+/// Quoted values stop at the line boundary, even if the quote is unterminated.
+/// A malformed credential in one log record must not erase later records.
 fn value_range(raw: &str, start: usize) -> Option<(usize, usize)> {
     let first = raw[start..].chars().next()?;
     if matches!(first, '\'' | '"') {
         let start = start + 1;
         let mut escaped = false;
         for (offset, ch) in raw[start..].char_indices() {
-            if escaped {
+            if matches!(ch, '\r' | '\n') {
+                return (offset > 0).then_some((start, start + offset));
+            } else if escaped {
                 escaped = false;
             } else if ch == '\\' {
                 escaped = true;
@@ -173,8 +192,27 @@ fn recognizable_key(token: &str, lower: &str) -> bool {
     if matches!(lower, "sk-ssh-ed25519" | "sk-ecdsa-sha2-nistp256") {
         return false;
     }
+    if let Some(body) = token.strip_prefix("SG.") {
+        let Some((id, secret)) = body.split_once('.') else {
+            return false;
+        };
+        let base64url = |part: &str| {
+            part.bytes()
+                .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-'))
+        };
+        return id.len() == 22 && secret.len() == 43 && base64url(id) && base64url(secret);
+    }
+    // These prefixes also occur in ordinary environment variable names, so a
+    // short suffix cannot establish that the token is a provider credential.
+    if let Some(body) = token.strip_prefix("hf_") {
+        return body.len() == 34 && body.bytes().all(|b| b.is_ascii_alphanumeric());
+    }
+    if let Some(body) = token.strip_prefix("npm_") {
+        return body.len() == 36 && body.bytes().all(|b| b.is_ascii_alphanumeric());
+    }
     if KEY_PREFIXES
         .iter()
+        .filter(|prefix| !matches!(**prefix, "sg." | "hf_" | "npm_"))
         .any(|prefix| lower.starts_with(prefix) && token.len() >= prefix.len() + 8)
     {
         return true;

@@ -230,9 +230,12 @@ byte for byte, which is why the strip matters more than it looks.
 Read-only tool output also replaces plaintext credential values with
 `<redacted>` before normalisation and truncation, and repeats the screen after
 normalisation. The screen recognizes password, token, secret and key values in
-`KEY=value`, `--key=value` and JSON-style assignments, Bearer values, common provider
-key prefixes, and complete or unterminated PEM private-key blocks. It preserves
-ordinary system facts and SSH public keys. This is a pattern screen: arbitrary
+`KEY=value`, `--key=value`, `--key value` and JSON-style assignments, Bearer values,
+common provider-key shapes, and complete or unterminated PEM private-key blocks.
+Quoted assignment values stop at the line boundary even if a quote is not closed,
+so malformed log records cannot hide later records. SendGrid, Hugging Face and npm
+tokens require their provider formats; generic `key:` file paths, ordinary system
+facts and SSH public keys are preserved. This is a pattern screen: arbitrary
 unlabelled passwords, encoded credentials and unrecognized formats can still
 reach a provider. Do not use read tools to collect secret files.
 

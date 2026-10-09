@@ -427,6 +427,79 @@ mod tests {
     use super::*;
 
     #[test]
+    fn tool_output_unterminated_quotes_preserve_following_log_lines() {
+        for label in [
+            "password=",
+            "--password",
+            "--password ",
+            "Authorization: Bearer ",
+        ] {
+            for newline in ["\n", "\r\n"] {
+                let later = "Oct 07 sshd[900]: Accepted publickey for root from 203.0.113.9\nOct 07 sudo: root : COMMAND=/bin/sh";
+                let raw = format!("Oct 07 app: {label}{newline}{later}");
+                let output = sanitize_tool_output("query_logs", &raw).into_inner();
+                assert!(
+                    output.contains(later),
+                    "empty value swallowed later logs: {output}"
+                );
+            }
+        }
+        for quote in ['\'', '"'] {
+            for value in ["", "hidden value", "hidden\\"] {
+                for newline in ["\n", "\r\n"] {
+                    let later = "Oct 07 sshd[900]: Accepted publickey for root from 203.0.113.9\nOct 07 sudo: root : COMMAND=/bin/sh";
+                    let raw = format!("Oct 07 app: password={quote}{value}{newline}{later}");
+                    let output = sanitize_tool_output("query_logs", &raw).into_inner();
+                    assert!(
+                        output.contains(later),
+                        "later log facts disappeared: {output}"
+                    );
+                    if !value.is_empty() {
+                        assert!(!output.contains(value), "quoted value leaked: {output}");
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn tool_output_preserves_provider_names_and_key_paths() {
+        let raw = "deb http://sg.archive.ubuntu.com/ubuntu jammy main\nHF_HOME=/root/.cache/huggingface\nnpm_config_cache=/root/.npm\nOct 07 sshd[812]: Unable to load host key: /etc/ssh/ssh_host_rsa_key";
+        let output = sanitize_tool_output("query_logs", raw).into_inner();
+        assert!(output.contains(raw), "host facts disappeared: {output}");
+    }
+
+    #[test]
+    fn tool_output_redacts_spaced_password_options_and_provider_shapes() {
+        for raw in [
+            "mysqldump --password hunter2 mydb",
+            "mysqldump --password 'hunter2' mydb",
+            "client --token hunter2 mydb",
+        ] {
+            let output = sanitize_tool_output("query_processes", raw).into_inner();
+            assert!(
+                !output.contains("hunter2"),
+                "option secret leaked: {output}"
+            );
+            assert!(
+                output.contains("mydb"),
+                "adjacent argument disappeared: {output}"
+            );
+        }
+        for key in [
+            format!("SG.{}.{}", "a".repeat(22), "b".repeat(43)),
+            format!("hf_{}", "a".repeat(34)),
+            format!("npm_{}", "a".repeat(36)),
+        ] {
+            let output =
+                sanitize_tool_output("query_environment", &format!("{key}\nservice healthy"))
+                    .into_inner();
+            assert!(!output.contains(&key), "provider secret leaked: {output}");
+            assert!(output.contains("service healthy"));
+        }
+    }
+
+    #[test]
     fn tool_output_redacts_credentials_before_normalisation_and_truncation() {
         // Construct the fake Google shape so the commit credential scanner does
         // not mistake a full-length source literal for a live provider key.
