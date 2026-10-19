@@ -65,10 +65,10 @@ table below.
 
 | Area | Why it matters | Difficulty |
 |---|---|---|
-| **Ubuntu LTS support** | The current suite is 96 Ubuntu stories. Committed live-VM evidence covers 79 of those Ubuntu stories on each LTS release, with a committed replay twin that reproduces each run: 22.04, 24.04 and 26.04 all at 79/79. The seventeen additional stories are not yet included in a committed live-VM run. `ubuntu-vm.sh` accepts `UBUNTU_RELEASE=jammy\|noble\|resolute`. Remaining: story coverage for the cross-family actions, and every Debian-only action has a story. | medium |
+| **Ubuntu LTS support** | The current suite is 99 Ubuntu stories. Committed live-VM evidence covers 79 of those Ubuntu stories on each LTS release, with a committed replay twin that reproduces each run: 22.04, 24.04 and 26.04 all at 79/79. The twenty additional stories are not yet included in a committed live-VM run. `ubuntu-vm.sh` accepts `UBUNTU_RELEASE=jammy\|noble\|resolute`. Remaining: story coverage for the cross-family actions, and every Debian-only action has a story. | medium |
 | **Distro detection coverage** | Robust `/etc/os-release` parsing for every release we claim to support. Pure-function tests against real fixture files, no integration mocks. The existing fixtures at the bottom of `crates/sysknife-core/src/distro.rs` show the shape. | easy |
 | **Action catalogue gaps** | Add a typed action (for example `EnableFirewallZone`). Small and isolated, and every PR carries the policy entry, the risk level and the tests. | easy |
-| **E2E story coverage** | Real prompts, real LLM, real daemon. The suite is 150 stories: 54 atomic + 96 Ubuntu. What is left is the cross-family middle: of the action names available on both families, 49 are still untouched by any story, plus 10 Fedora-only and 0 Ubuntu-only ones. See #233 for the clustered map. | medium |
+| **E2E story coverage** | Real prompts, real LLM, real daemon. The suite is 153 stories: 54 atomic + 99 Ubuntu. What is left is the cross-family middle: of the action names available on both families, 46 are still untouched by any story, plus 10 Fedora-only and 0 Ubuntu-only ones. See #233 for the clustered map. | medium |
 | **Fedora Atomic validation** | The action families exist and `DistroId::is_supported()` returns true for Atomic 41 and up. Nobody has run `tests/e2e/atomic-vm.sh` against a current release. Needs Fedora Atomic hardware or a VM host. | tedious |
 | **Demo recording on real hardware** | Replace the bundled demo GIF with a 30-second recording on real Ubuntu 26.04 with rollback visible. | easy |
 
@@ -147,7 +147,7 @@ gate invokes these fixtures too, so install both before running it locally:
 git checkout -b feat/<short-name>
 # … implement …
 cargo nextest run --workspace --locked
-cargo clippy --workspace --all-targets -- -D warnings
+cargo clippy --workspace --all-features --all-targets --locked -- -D warnings
 cargo fmt --all -- --check
 ```
 
@@ -300,9 +300,8 @@ Bodies should explain *why*. The diff already says what.
 - One PR per logical change. Big multi-concern PRs get split.
 - Add or update tests for any behaviour change.
 - Update docs alongside the code, not in a follow-up.
-- Title in Conventional Commits style. The
-  [`semantic-pull-request`](https://github.com/amannn/action-semantic-pull-request)
-  CI check enforces this.
+- Title in Conventional Commits style (`fix(cli): …`, `docs: …`). No CI check
+  enforces it; the squash merge uses the title as the commit subject.
 - Sign off your commits if your employer asks for DCO; we don't require
   it but we accept it.
 
