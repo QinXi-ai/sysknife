@@ -70,6 +70,9 @@ jobs:
       - name: Check GitHub release creation is safe to re-run
         run: bash tests/release/release-create-rerun.test.sh
 
+      - name: Check npm publishes only after crates.io
+        run: bash tests/release/release-publish-order.test.sh
+
       - name: Test internal dependency pin coverage
         run: bash tests/release/release-version-pins.test.sh
 
