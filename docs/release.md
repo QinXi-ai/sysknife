@@ -184,7 +184,11 @@ unverifiable tag on a published release is worse than an unsigned one.
 One directory listing cannot be updated from CI, so the release workflow files a
 checklist issue titled `Post-release manual steps for <tag>` and assigns it to
 whoever pushed the tag. It carries the exact commands and the real checksum read
-from that release's `sha256sums-linux-x86_64.txt`.
+from that release's `sha256sums-linux-x86_64.txt`. New checklists carry the
+`documentation` and `maintainer-only` labels. If the release job is rerun for the
+same tag, it keeps the existing checklist instead of creating a duplicate; when
+a later release runs, older open checklists are closed with a comment naming the
+superseding tag.
 
 - **Glama build spec.** The admin form is browser-only. Only the build steps
   change per release, to the new binary URL and checksum. Leave the
