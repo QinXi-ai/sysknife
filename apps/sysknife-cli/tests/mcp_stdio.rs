@@ -129,9 +129,25 @@ fn tools_list_uses_the_daemons_distro_and_falls_back_for_old_daemons() {
         let dir = tempfile::tempdir().unwrap();
         let socket = dir.path().join("daemon.sock");
         let listener = UnixListener::bind(&socket).unwrap();
+        listener.set_nonblocking(true).unwrap();
         let remote = distro.clone();
         let daemon = std::thread::spawn(move || {
-            let (mut stream, _) = listener.accept().unwrap();
+            let deadline = std::time::Instant::now() + FRAME_TIMEOUT;
+            let (mut stream, _) = loop {
+                match listener.accept() {
+                    Ok(pair) => break pair,
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        assert!(
+                            std::time::Instant::now() < deadline,
+                            "MCP server did not connect to query the daemon's distro"
+                        );
+                        std::thread::sleep(Duration::from_millis(5));
+                    }
+                    Err(error) => panic!("accept daemon connection: {error}"),
+                }
+            };
+            stream.set_read_timeout(Some(FRAME_TIMEOUT)).unwrap();
+            stream.set_write_timeout(Some(FRAME_TIMEOUT)).unwrap();
             let mut size = [0; 4];
             stream.read_exact(&mut size).unwrap();
             let mut bytes = vec![0; u32::from_le_bytes(size) as usize];
