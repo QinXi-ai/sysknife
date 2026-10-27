@@ -465,6 +465,10 @@ pub struct AuditVerifyReport {
     /// Backend label: a filesystem path for SQLite, the literal `"postgres"`
     /// for Postgres deployments.
     pub backend: String,
+    /// Explains when the verifier selected the system daemon's store because
+    /// no per-user store exists. Omitted when no fallback explanation is needed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub audit_store_note: Option<String>,
     /// The configured checkpoint-anchor verdict, or the same unconfigured
     /// truncation caveat emitted by the CLI.
     pub audit_anchor: serde_json::Value,
@@ -1283,17 +1287,19 @@ async fn doctor_at_socket(socket: SocketTarget) -> DoctorReport {
 
     // Audit DB path / chain status — same precedence rules as `run_audit_verify`.
     let lacs_config = sysknife_core::config::LacsConfig::load();
-    let audit_db_path = match lacs_config.storage.as_ref() {
-        Some(s) if s.backend.eq_ignore_ascii_case("postgres") => "postgres".to_string(),
-        _ => sysknife_core::default_database_path().display().to_string(),
-    };
-
-    let audit_chain_status = match audit_chain_quick_check(&lacs_config, &mut warnings).await {
-        VerifyOutcomeKind::Intact => "intact",
-        VerifyOutcomeKind::Broken => "broken",
-        VerifyOutcomeKind::Unknown => "unknown",
+    let audit_store = sysknife_core::resolve_audit_store();
+    let (audit_db_path, store_note) = audit_store_details(&lacs_config, &audit_store);
+    if let Some(note) = store_note {
+        warnings.push(format!("audit database: {note}"));
     }
-    .to_string();
+
+    let audit_chain_status =
+        match audit_chain_quick_check(&lacs_config, &audit_store, &mut warnings).await {
+            VerifyOutcomeKind::Intact => "intact",
+            VerifyOutcomeKind::Broken => "broken",
+            VerifyOutcomeKind::Unknown => "unknown",
+        }
+        .to_string();
 
     DoctorReport {
         daemon_socket: socket_label,
@@ -1320,11 +1326,12 @@ enum VerifyOutcomeKind {
 /// just because the audit key file is missing.
 async fn audit_chain_quick_check(
     lacs_config: &sysknife_core::config::LacsConfig,
+    audit_store: &sysknife_core::AuditStoreChoice,
     warnings: &mut Vec<String>,
 ) -> VerifyOutcomeKind {
     use sysknife_daemon::audit_chain::{AuditKey, BindingOutcome, VerifyOutcome};
 
-    let db_path = sysknife_core::default_database_path();
+    let db_path = audit_store.path().to_path_buf();
     let key_path = sysknife_daemon::audit_chain::resolve_audit_key_path(&db_path);
 
     if !key_path.exists() {
@@ -1393,32 +1400,43 @@ async fn audit_verify_inner() -> AuditVerifyReport {
 /// Named for what it actually does: this is a filesystem operation, not a daemon
 /// request, so it says nothing about the host `SYSKNIFE_SOCKET` points at.
 async fn audit_verify_local_store() -> AuditVerifyReport {
+    let lacs_config = sysknife_core::config::LacsConfig::load();
+    let audit_store = sysknife_core::resolve_audit_store();
+    audit_verify_local_store_with_store(&lacs_config, &audit_store).await
+}
+
+async fn audit_verify_local_store_with_store(
+    lacs_config: &sysknife_core::config::LacsConfig,
+    audit_store: &sysknife_core::AuditStoreChoice,
+) -> AuditVerifyReport {
     use sysknife_daemon::audit_chain::AuditKey;
 
-    let lacs_config = sysknife_core::config::LacsConfig::load();
-    let backend_label = match lacs_config.storage.as_ref() {
-        Some(s) if s.backend.eq_ignore_ascii_case("postgres") => "postgres".to_string(),
-        _ => sysknife_core::default_database_path().display().to_string(),
-    };
+    let (backend_label, store_note) = audit_store_details(lacs_config, audit_store);
+    let db_path = audit_store.path().to_path_buf();
 
-    let db_path = sysknife_core::default_database_path();
     let key_path = sysknife_daemon::audit_chain::resolve_audit_key_path(&db_path);
 
     if !key_path.exists() {
-        return cannot_verify_report(
-            backend_label,
-            format!(
-                "audit key not found at {}; the daemon generates this on first run, \
+        return with_audit_store_note(
+            cannot_verify_report(
+                backend_label,
+                format!(
+                    "audit key not found at {}; the daemon generates this on first run, \
                  or set $SYSKNIFE_AUDIT_KEY_PATH",
-                key_path.display()
+                    key_path.display()
+                ),
             ),
+            store_note,
         );
     }
 
     let key = match AuditKey::load_or_generate(&key_path) {
         Ok(k) => k,
         Err(e) => {
-            return cannot_verify_report(backend_label, format!("audit key load failed: {e}"));
+            return with_audit_store_note(
+                cannot_verify_report(backend_label, format!("audit key load failed: {e}")),
+                store_note,
+            );
         }
     };
 
@@ -1430,8 +1448,25 @@ async fn audit_verify_local_store() -> AuditVerifyReport {
         _ => verify_sqlite(&db_path, &verifier).await,
     };
 
-    let anchor = verify_configured_anchor(&lacs_config, &db_path, &verifier).await;
-    outcome_to_report(outcome, backend_label, anchor.as_ref())
+    let anchor = verify_configured_anchor(lacs_config, &db_path, &verifier).await;
+    with_audit_store_note(
+        outcome_to_report(outcome, backend_label, anchor.as_ref()),
+        store_note,
+    )
+}
+
+/// Return the report's backend label and any explanation for selecting the
+/// system SQLite store. Postgres readers do not use a local store choice.
+fn audit_store_details(
+    lacs_config: &sysknife_core::config::LacsConfig,
+    audit_store: &sysknife_core::AuditStoreChoice,
+) -> (String, Option<String>) {
+    match lacs_config.storage.as_ref() {
+        Some(storage) if storage.backend.eq_ignore_ascii_case("postgres") => {
+            ("postgres".to_string(), None)
+        }
+        _ => (audit_store.path().display().to_string(), audit_store.note()),
+    }
 }
 
 /// Short label for one chain walk.
@@ -1492,6 +1527,7 @@ fn outcome_to_report(
             actual: None,
             reason: None,
             backend,
+            audit_store_note: None,
             audit_anchor: audit_anchor.clone(),
             events_checked,
             approval_events_status,
@@ -1521,6 +1557,7 @@ fn outcome_to_report(
             actual: Some(actual),
             reason: None,
             backend,
+            audit_store_note: None,
             audit_anchor: audit_anchor.clone(),
             events_checked,
             approval_events_status,
@@ -1574,6 +1611,11 @@ fn with_socket_caveat(mut report: AuditVerifyReport, caveat: Option<String>) -> 
     report
 }
 
+fn with_audit_store_note(mut report: AuditVerifyReport, note: Option<String>) -> AuditVerifyReport {
+    report.audit_store_note = note;
+    report
+}
+
 fn cannot_verify_report(backend: String, reason: String) -> AuditVerifyReport {
     use sysknife_daemon::audit_chain::BindingOutcome;
 
@@ -1587,6 +1629,7 @@ fn cannot_verify_report(backend: String, reason: String) -> AuditVerifyReport {
         actual: None,
         reason: Some(reason),
         backend,
+        audit_store_note: None,
         audit_anchor,
         events_checked: 0,
         approval_events_status: "cannot_verify".to_string(),
@@ -1929,6 +1972,20 @@ mod boundary_tests {
 mod tests {
     use super::*;
 
+    #[test]
+    fn cli_and_mcp_audit_readers_do_not_bypass_the_shared_store_resolver() {
+        let per_user_resolver = format!("sysknife_core::{}(", "default_database_path");
+        for (file, source) in [
+            ("runner.rs", include_str!("runner.rs")),
+            ("mcp_server.rs", include_str!("mcp_server.rs")),
+        ] {
+            assert!(
+                !source.contains(&per_user_resolver),
+                "{file} must resolve audit paths through resolve_audit_store()"
+            );
+        }
+    }
+
     // -----------------------------------------------------------------------
     // An agent must be told when the verdict is about a different machine
     // -----------------------------------------------------------------------
@@ -1939,10 +1996,74 @@ mod tests {
     /// the agent will tell the operator their audit trail is fine, having read a
     /// chain on the wrong host. The caveat has to travel in the structured
     /// output, not only in the CLI's human text.
-    #[test]
-    fn the_report_carries_the_which_machine_caveat() {
+    #[tokio::test]
+    async fn the_report_carries_the_which_machine_caveat() {
+        use std::sync::Arc;
+        use sysknife_daemon::audit_chain::AuditKey;
+        use sysknife_daemon::auth::CallerPrincipal;
+        use sysknife_daemon::transactions::{NewTransaction, TransactionStore};
+        use sysknife_types::{CallerRole, RiskLevel};
+
+        let temp = tempfile::tempdir().expect("create system-store fixture");
+        let db_path = temp.path().join("daemon.sqlite");
+        let key_path = sysknife_daemon::audit_chain::resolve_audit_key_path(&db_path);
+        let key = AuditKey::load_or_generate(&key_path).expect("create system-store audit key");
+        let store = TransactionStore::open_with_key(&db_path, Arc::new(key))
+            .expect("create populated system audit store");
+        store
+            .record(NewTransaction {
+                request_id: "mcp-system-store".to_string(),
+                request_hash: "mcp-system-store-hash".to_string(),
+                action_name: "UpdateSystem".to_string(),
+                risk_level: RiskLevel::High,
+                summary: "Upgrade the system".to_string(),
+                warnings: vec![],
+                caller_role: CallerRole::Dev,
+                caller_principal: CallerPrincipal::Uid(1000),
+            })
+            .expect("record an audit row in the system store");
+        drop(store);
+
+        let lacs_config = sysknife_core::config::LacsConfig::default();
+        let per_user_path = temp.path().join("xdg/state/sysknife/daemon.sqlite");
+        let audit_store =
+            sysknife_core::resolve_audit_store_from(None, per_user_path.clone(), db_path.clone());
+        assert!(
+            matches!(&audit_store, sysknife_core::AuditStoreChoice::System(_)),
+            "a populated system store must win when the per-user store is absent"
+        );
+        let store_note = audit_store
+            .note()
+            .expect("system store needs an explanation");
+        let report = audit_verify_local_store_with_store(&lacs_config, &audit_store).await;
+        let cli_log_path = temp.path().join("cli-audit-report.json");
+        let cli_log =
+            crate::runner::Logger::new(Some(&cli_log_path)).expect("create CLI report capture");
+        crate::runner::run_audit_verify_with_store(
+            crate::cli::AuditVerifyArgs {
+                json: true,
+                pubkey: None,
+            },
+            &cli_log,
+            &lacs_config,
+            &audit_store,
+        )
+        .await
+        .expect("CLI verify the selected system store");
+        let cli_report: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&cli_log_path).expect("read CLI report"))
+                .expect("CLI emits a JSON report");
+        assert_eq!(report.status, "intact");
+        assert_eq!(cli_report["status"], report.status);
+        assert_eq!(cli_report["backend"], report.backend);
+        assert_eq!(report.backend, db_path.display().to_string());
+        assert_eq!(
+            report.audit_store_note.as_deref(),
+            Some(store_note.as_str())
+        );
+
         let report = with_socket_caveat(
-            cannot_verify_report("/tmp/store.sqlite".into(), "no key".into()),
+            report,
             Some("NOTE: SYSKNIFE_SOCKET is /tmp/sysknife-web01.sock".into()),
         );
 
@@ -1951,12 +2072,17 @@ mod tests {
             .as_deref()
             .expect("the caveat must survive onto the report");
         assert!(caveat.contains("/tmp/sysknife-web01.sock"));
+        assert_eq!(
+            report.audit_store_note.as_deref(),
+            Some(store_note.as_str())
+        );
 
         let json = serde_json::to_value(&report).expect("report serializes");
         assert!(
             json.get("daemon_socket_caveat").is_some(),
             "and must be visible in the tool's JSON output, got: {json}"
         );
+        assert_eq!(json["audit_store_note"], store_note);
     }
 
     /// The local case stays clean: no socket override, no field content, so the
@@ -1968,6 +2094,7 @@ mod tests {
             None,
         );
         assert!(report.daemon_socket_caveat.is_none());
+        assert!(report.audit_store_note.is_none());
     }
 
     // -----------------------------------------------------------------------
@@ -3063,6 +3190,13 @@ mod tests {
             crate::client::SocketTarget::try_from_str(&report.daemon_socket).unwrap(),
             crate::client::SocketTarget::Unix(sock.clone()),
         );
+
+        let system_store =
+            sysknife_core::AuditStoreChoice::System(dir.path().join("daemon.sqlite"));
+        let (audit_db_path, note) =
+            audit_store_details(&sysknife_core::config::LacsConfig::default(), &system_store);
+        assert_eq!(audit_db_path, system_store.path().display().to_string());
+        assert_eq!(note, system_store.note());
     }
 
     #[test]
