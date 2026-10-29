@@ -139,7 +139,8 @@ run_case invalid fail invalid invalid
 [[ ! -s "$fixture/ssh.log" ]]
 run_case duplicate fail duplicate noble noble
 [[ ! -s "$fixture/ssh.log" ]]
-UBUNTU_VM_SSH_PORT=2222 run_case same-port fail noble
+UBUNTU_VM_SSH_PORT=2222 run_case same-port fail 'duplicate SSH port 2222'
+grep -Fq '[noble]' "$fixture/output"
 [[ "$(cat "$fixture/calls.log")" == jammy ]]
 
 # Termination during an in-flight call must still reap every tunnel.
