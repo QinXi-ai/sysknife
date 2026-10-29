@@ -69,6 +69,7 @@ PY
 )"
 [[ -x "$binary" ]] || { echo "multi-vm-smoke: build artifact is not executable: $binary" >&2; exit 1; }
 
+seen_ports=" "
 for release in "${releases[@]}"; do
     # Source independently so one release's defaults cannot leak into the next.
     read -r port user < <(
@@ -77,6 +78,12 @@ for release in "${releases[@]}"; do
         source "$repo_root/tests/e2e/ubuntu-vm.conf"
         printf '%s %s\n' "$UBUNTU_VM_SSH_PORT" "$UBUNTU_VM_USER"
     )
+    [[ "$seen_ports" != *" $port "* ]] || {
+        printf '[%s] duplicate SSH port %s: selected releases must use distinct guests\n' \
+            "$release" "$port" >&2
+        exit 2
+    }
+    seen_ports+="$port "
     socket="$run_dir/$release.sock"
     ssh -N -o ExitOnForwardFailure=yes -o StreamLocalBindUnlink=yes \
         -o BatchMode=yes -o IdentitiesOnly=yes -o ConnectTimeout="$wait_seconds" \

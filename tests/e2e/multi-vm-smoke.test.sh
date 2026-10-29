@@ -139,6 +139,8 @@ run_case invalid fail invalid invalid
 [[ ! -s "$fixture/ssh.log" ]]
 run_case duplicate fail duplicate noble noble
 [[ ! -s "$fixture/ssh.log" ]]
+UBUNTU_VM_SSH_PORT=2222 run_case same-port fail noble
+[[ "$(cat "$fixture/calls.log")" == jammy ]]
 
 # Termination during an in-flight call must still reap every tunnel.
 SCENARIO=hang-call SYSKNIFE_MULTI_VM_TIMEOUT=5 python3 - <<'PY'
@@ -170,4 +172,4 @@ with (root / 'output').open('w') as out:
             process.terminate()
             process.wait(timeout=12)
 PY
-printf 'PASS signal-cleanup\nmulti-vm-smoke: 12 offline cases passed\n'
+printf 'PASS signal-cleanup\nmulti-vm-smoke: 13 offline cases passed\n'
