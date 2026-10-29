@@ -179,6 +179,26 @@ the host itself or pull its database and public key to an auditor's machine. See
 
 ### Configure and connect (SSH tunnel)
 
+For the Ubuntu E2E guests, run the controller smoke check from the repository:
+
+```sh
+bash tests/e2e/multi-vm-smoke.sh                 # jammy, noble and resolute
+bash tests/e2e/multi-vm-smoke.sh jammy noble     # explicit subset
+```
+
+Start and provision the selected guests with `tests/e2e/ubuntu-vm.sh` first.
+The smoke script builds the controller CLI, uses the ports and user from
+`tests/e2e/ubuntu-vm.conf` and the harness's `SYSKNIFE_VM_SSH_KEY`, and opens
+one private Unix socket tunnel per guest. Each `doctor --json` reply is tagged
+with its release. Every selected guest must answer; missing guests are failures,
+not skips. Tunnels are stopped and sockets removed on success, failure or signal.
+`SYSKNIFE_MULTI_VM_TIMEOUT` sets the positive timeout in seconds for each bind
+and call (default 15). The script does not start VMs or modify guest state.
+
+`bash tests/e2e/multi-vm-smoke.test.sh` checks the orchestration offline with
+stub SSH and Cargo commands and real local sockets. This runs in CI and is
+discovered by `scripts/check_test_reachability.sh`; it is not live-VM evidence.
+
 Run the setup wizard on the host and choose the integration you want:
 
 ```sh

@@ -254,6 +254,8 @@ jobs:
 
       - name: Check no harness syncs another harness's VM disk into its guest
         run: bash tests/e2e/vm-sync-parity.test.sh
+      - name: Multi-VM tunnel smoke orchestration (offline)
+        run: bash tests/e2e/multi-vm-smoke.test.sh
 
       - name: Lint markdown
         run: |
