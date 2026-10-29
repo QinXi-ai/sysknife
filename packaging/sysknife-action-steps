@@ -8,11 +8,113 @@ user-configurable tool. Never add a generic exec mode or a caller-selected path.
 """
 import os
 import re
+import signal
 import stat
 import subprocess
 import sys
 
 SYSTEM_ENV = {"PATH": "/usr/sbin:/usr/bin:/sbin:/bin", "LANG": "C.UTF-8"}
+
+# What `apt` runs apt-get with. apt reads its configuration from APT_CONFIG and
+# runs the hooks it names, so the caller's environment is never inherited: the
+# child gets exactly this, which is also what the old `sudo env DEBIAN_FRONTEND=...
+# NEEDRESTART_MODE=a` wrapper was there to provide.
+APT_ENV = {**SYSTEM_ENV, "DEBIAN_FRONTEND": "noninteractive", "NEEDRESTART_MODE": "a"}
+# The apt verbs, and the only ones. tests/release/action-steps.test.sh reads the
+# verbs apt.rs sends out of the Rust source and fails if these differ.
+# AptUpdate, AptUpgrade and AptAutoremove send no operand.
+APT_BARE = {"update": ["update"], "dist-upgrade": ["dist-upgrade", "-y"],
+            "autoremove": ["autoremove", "-y"]}
+# AptInstall, AptRemove, AptPurge, AptHold and AptUnhold send one validated package.
+APT_WITH_PACKAGE = ("install", "remove", "purge", "hold", "unhold")
+# `.` and `+` are legal in package names (python3.12, g++) and are also regular
+# expression metacharacters. When an operand is not an exact package name, apt
+# falls back to a regular expression and acts on EVERY package it matches, so
+# `linux-image.+` would pass any character class that accepts `libstdc++6`. This
+# option turns the fallback off. It is undocumented in apt.conf(5) and behaves the
+# same on apt 2.0.10 (Ubuntu 20.04) through 3.2.0 (Ubuntu 26.04) and Debian 12 and
+# 13; tests/release/action-steps.test.sh runs it against the real apt-get. Every
+# apt-get and apt-mark argv this helper builds carries it, and exact_package()
+# below checks the operand again without relying on it.
+APT_EXACT_NAMES = ["-o", "APT::Cmd::Pattern-Only=1"]
+APT_CACHE = "/usr/bin/apt-cache"
+DPKG_QUERY = "/usr/bin/dpkg-query"
+
+# The rpm-ostree verbs, and the only ones. The daemon sends
+# `action-steps rpm-ostree <verb> <operand>...` for every rpm-ostree call that
+# takes an operand; the four fixed argvs (upgrade, rollback,
+# `cleanup --rollback --pending`, `override reset --all`) keep exact sudoers
+# lines of their own. tests/release/action-steps.test.sh reads the verbs
+# layering.rs and deployment.rs send out of the Rust source and fails if these
+# differ.
+RPM_OSTREE = "/usr/bin/rpm-ostree"
+RPM_OSTREE_VERBS = ("install", "uninstall", "replace", "override-remove", "rebase", "kargs")
+# Mirrors LOCAL_IMAGE_TRANSPORTS in validate.rs, and the release test compares
+# them: the containers-image transports that read an image from this host. An
+# image the caller placed on disk is an OS the next boot runs.
+LOCAL_IMAGE_TRANSPORTS = ("oci", "oci-archive", "dir", "docker-archive", "docker-daemon",
+                          "containers-storage", "ostree", "sif", "tarball", "file")
+# Mirrors UNVERIFIED_IMAGE_TRANSPORTS in validate.rs: no signature check, so any image.
+UNVERIFIED_IMAGE_TRANSPORTS = ("ostree-unverified-registry", "ostree-unverified-image")
+# The kernel arguments that may be added, in normal form (see the normaliser
+# below): lowercase, `-` read as `_` in the key. Anything not named here is
+# refused. Documentation/admin-guide/kernel-parameters.txt and
+# kernel-command-line(7) describe each key. This is an allowlist because four
+# review rounds of the denylists it replaced each found another spelling past
+# them: a hyphen in the key, a kstrtobool prefix such as `mitigations=of`, a
+# mitigation switch nobody had listed. One list, three copies:
+# crates/sysknife-daemon/src/executor.rs, packaging/sysknife-grub-kargs-edit and
+# packaging/sysknife-action-steps. tests/release/grub-kargs-edit.test.sh and
+# tests/release/action-steps.test.sh compare them element by element.
+#
+# Ordinary switches with no value; removable.
+KARG_FLAGS = ("quiet", "splash", "rhgb", "nomodeset", "nowatchdog", "threadirqs")
+# Hardening switches with no value; added, never removed.
+KARG_HARDENING_FLAGS = ("nosmt", "slab_nomerge")
+# Ordinary keys that take any value of the one-token character set; removable.
+KARG_VALUE_KEYS = (
+    "console", "video", "loglevel", "hugepages", "hugepagesz",
+    "default_hugepagesz", "nvme_core.default_ps_max_latency_us", "usbcore.autosuspend",
+    "nvidia_drm.modeset", "nvidia_drm.fbdev", "i915.enable_psr",
+    "amdgpu.dc", "acpi_backlight", "mem_sleep_default", "pcie_aspm", "transparent_hugepage",
+    "zswap.enabled", "systemd.show_status", "plymouth.enable",
+)
+# Ordinary keys whose value is a comma-separated list, each element from the
+# key's own set; removable. rd.driver.blacklist= keeps a driver from loading, so
+# it takes GPU drivers only. resume= is not listed at all: at a device the caller
+# controls it boots a crafted hibernation image.
+KARG_LIST_VALUES = {
+    "rd.driver.blacklist": ("nouveau", "nvidia", "nvidia_drm", "nvidia_modeset", "radeon",
+                            "amdgpu", "i915"),
+}
+# Hardening keys with the only values that may be added; never removed.
+KARG_HARDENING_VALUES = {
+    "lockdown": ("integrity", "confidentiality"),
+    "module.sig_enforce": ("1",),
+    "intel_iommu": ("on",),
+    "amd_iommu": ("force_isolation",),
+    "init_on_alloc": ("1",),
+    "init_on_free": ("1",),
+    "page_alloc.shuffle": ("1",),
+    "randomize_kstack_offset": ("on",),
+    "mitigations": ("auto", "auto,nosmt"),
+    "pti": ("on",),
+    "vsyscall": ("none",),
+    "debugfs": ("off",),
+}
+# Exact downgrades, in normal form. Removing one hardens the host, so it is
+# allowed although its key is not an ordinary one; none of them can be added.
+KARG_WEAKENING = (
+    "selinux=0", "enforcing=0", "apparmor=0", "lockdown=none", "debugfs=on", "iommu=off",
+    "intel_iommu=off", "nokaslr", "nopti", "nosmap", "nosmep", "nospectre_v1",
+    "nospectre_v2", "nospec_store_bypass_disable", "nospectre_bhb", "single", "emergency",
+    "rescue", "rd.break", "rd.shell", "systemd.debug_shell", "init=/bin/sh", "init=/bin/bash",
+    "mitigations=off", "pti=off", "audit=0", "module.sig_enforce=0", "init_on_alloc=0",
+    "init_on_free=0", "page_alloc.shuffle=0", "randomize_kstack_offset=off", "spectre_v2=off",
+    "spec_store_bypass_disable=off", "mds=off", "tsx_async_abort=off", "mmio_stale_data=off",
+    "retbleed=off", "srbds=off", "l1tf=off", "spectre_bhi=off", "gather_data_sampling=off",
+    "reg_file_data_sampling=off",
+)
 
 # Mirrors ROOT_SHELL_UNITS in crates/sysknife-daemon/src/actions/validate.rs.
 #
@@ -27,10 +129,33 @@ ROOT_SHELL_UNITS = ("debug-shell", "emergency", "rescue", "runlevel1", "single")
 # denylist. systemd unit names are case-insensitive, so the comparison is too.
 UNIT_SUFFIXES = (".service", ".target", ".socket", ".mount", ".path", ".slice",
                  ".scope")
-# The split mirrors the executor: bringing a unit up has to clear the denylist,
-# taking one down does not, and masking one is a mitigation.
+# Mirrors POWER_STATE_UNITS. A Medium `unit start reboot.target` reached the
+# outcome of RebootSystem, which is High (GHSA-68v6-p23h-fwcf).
+POWER_STATE_UNITS = (
+    "reboot", "soft-reboot", "poweroff", "halt", "kexec", "ctrl-alt-del", "exit",
+    "runlevel0", "runlevel6", "shutdown", "umount", "sleep", "suspend",
+    "hibernate", "hybrid-sleep", "suspend-then-hibernate", "systemd-reboot",
+    "systemd-soft-reboot", "systemd-poweroff", "systemd-halt", "systemd-kexec",
+    "systemd-exit", "systemd-suspend", "systemd-hibernate",
+    "systemd-hybrid-sleep", "systemd-suspend-then-hibernate")
+# Mirror RESOURCE_LIMIT_PROTECTED_UNITS and RESOURCE_LIMIT_PROTECTED_PREFIXES:
+# stopping one of these switches off the enforcement, the evidence, or the way
+# back in, and MaskService on them is High.
+PROTECTED_UNITS = ("sysknife-daemon", "auditd", "systemd-journald", "rsyslog",
+                   "dbus", "dbus-broker", "polkit", "polkitd", "systemd-logind",
+                   "ssh", "sshd")
+PROTECTED_UNIT_PREFIXES = ("systemd-journald", "auditd", "audit-rules")
+# The split mirrors the executor: bringing a unit up has to clear the denylists,
+# stopping or restarting one has to clear the protected list, and masking one
+# is a mitigation.
 ACTIVATING_VERBS = ("start", "restart", "enable", "unmask")
+STOPPING_VERBS = ("stop", "restart")
 QUIESCING_VERBS = ("stop", "disable", "mask", "reload")
+# Mirrors CRITICAL_ACCOUNTS in validate.rs, and the release test compares them.
+# The daemon refuses to lock these; the user-lock branch below checked only the
+# name's shape, so a direct call could lock root, and user-unlock could reopen
+# a root account an administrator had locked on purpose.
+CRITICAL_ACCOUNTS = ("root", "daemon", "bin", "sys", "sudo", "adm")
 
 
 def unit_name(value):
@@ -40,13 +165,30 @@ def unit_name(value):
     return value
 
 
-def activatable_unit(value):
-    """Mirrors validated_activatable_unit: unit_name plus the root-shell list."""
-    unit = unit_name(value)
+def bare_unit(unit):
+    """Mirrors bare_unit_name: lowercase, no type suffix, no instance."""
     lower = unit.lower()
     bare = next((lower[: -len(s)] for s in UNIT_SUFFIXES if lower.endswith(s)), lower)
+    return bare.split("@", 1)[0]
+
+
+def activatable_unit(value):
+    """Mirrors validated_activatable_unit: unit_name plus both denylists."""
+    unit = unit_name(value)
+    bare = bare_unit(unit)
     if bare in ROOT_SHELL_UNITS:
         raise ValueError("that unit hands out a root shell")
+    if bare in POWER_STATE_UNITS:
+        raise ValueError("that unit changes the power state")
+    return unit
+
+
+def stoppable_unit(value):
+    """Mirrors validated_stoppable_unit: unit_name plus the protected list."""
+    unit = unit_name(value)
+    bare = bare_unit(unit)
+    if bare in PROTECTED_UNITS or bare.startswith(PROTECTED_UNIT_PREFIXES):
+        raise ValueError("that unit is protected from stop and restart")
     return unit
 
 
@@ -63,6 +205,237 @@ def absolute_path(value):
     return value
 
 
+# Mirrors validated_kill_signal in crates/sysknife-daemon/src/executor.rs.
+SIGNALS = ("TERM", "KILL", "HUP", "INT")
+
+
+def kill_target(value):
+    """A pid, or a process group as `-<pgid>`, never -1, 0 or 1.
+
+    `/usr/bin/kill -s *` was a direct grant, and `kill -s KILL -1` signals every
+    process root can reach while `kill -s KILL 1` kills init. The daemon's
+    `pid >= 2` check covers only the argv the daemon builds.
+    """
+    if not re.fullmatch(r"-?[1-9][0-9]{0,9}", value):
+        raise ValueError("invalid pid")
+    target = int(value)
+    if not 2 <= abs(target) <= 2**31 - 1:
+        raise ValueError("pid and pgid -1, 0 and 1 are refused")
+    return target
+
+
+# Mirrors CRITICAL_GROUPS in validate.rs: the groups DeleteGroup refuses,
+# refused here for direct callers. CRITICAL_ACCOUNTS is declared above.
+CRITICAL_GROUPS = ("root", "sudo", "wheel", "adm", "sys", "daemon", "bin", "staff",
+                   "shadow", "disk")
+# Mirrors SetPasswordAging in executor.rs: these flags, 0..=99999 days.
+AGING_FLAGS = ("-M", "-m", "-W")
+
+
+def lvm_name(value):
+    """Mirrors validated_lvm_name: no leading dash or dot, no `/`."""
+    if not re.fullmatch(r"[A-Za-z0-9_][A-Za-z0-9+_.-]{0,126}", value):
+        raise ValueError("invalid LVM name")
+    return value
+
+
+def lvm_size(value):
+    """Mirrors validated_lvm_size: `[+]<digits>[.<digits>][kmgtp]`, no shrink."""
+    if len(value) > 32 or not re.fullmatch(r"\+?[0-9]+(\.[0-9]+)?[kKmMgGtTpP]?", value):
+        raise ValueError("invalid LVM size")
+    return value
+
+
+def apt_package(value, operation):
+    """Mirrors validated_install_package and validated_unmodified_package.
+
+    apt-get reads a trailing `-` on an operand as "remove this package", a
+    trailing `+` as "install this package" and a trailing `^` as "install every
+    package of this task", so `install pkg-` removes, `remove pkg+` installs and
+    `install ubuntu-desktop^` installs a task. A trailing `+` stays legal for
+    `install` (g++ and libstdc++6 are real packages); every other verb refuses it
+    and takes the arch-qualified spelling, `g++:amd64`. `^` is in no package name.
+    fullmatch, so a trailing newline is refused. Whether a name that contains `.`
+    or `+` is an exact package name is apt's to decide, with APT_EXACT_NAMES.
+    tests/release/action-steps.test.sh runs the daemon's own corpus,
+    crates/sysknife-daemon/tests/data/apt-package-parity.txt, through this.
+    """
+    if (not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9+._:=~-]{0,127}", value)
+            or value.endswith((".deb", ".rpm", "-"))
+            or (operation != "install" and value.endswith("+"))):
+        raise ValueError("invalid package name")
+    return value
+
+
+def apt_argv(values):
+    """The apt-get argv for `apt <subcommand> [<package>]`, and nothing else.
+
+    `env DEBIAN_FRONTEND=... NEEDRESTART_MODE=a /usr/bin/apt-get *` was a sudoers
+    grant, and the trailing `*` took apt's own options: `apt-get -o
+    APT::Update::Pre-Invoke::=<cmd> update` runs <cmd> as root, with no preview,
+    no approval receipt and no audit row. sudoers cannot say "and no options", so
+    the subcommands are an allowlist, no argument is ever an option, and the
+    operand follows a literal `--`. apt-mark takes the same options as apt-get,
+    so hold and unhold are built here too instead of keeping a grant on it.
+    """
+    if len(values) == 1 and values[0] in APT_BARE:
+        return ["/usr/bin/apt-get", *APT_EXACT_NAMES, *APT_BARE[values[0]]]
+    if len(values) == 2 and values[0] in APT_WITH_PACKAGE:
+        verb, package = values[0], apt_package(values[1], values[0])
+        if verb in ("hold", "unhold"):
+            return ["/usr/bin/apt-mark", *APT_EXACT_NAMES, verb, "--", package]
+        return ["/usr/bin/apt-get", *APT_EXACT_NAMES, verb, "-y", "--", package]
+    raise ValueError("unsupported apt operation")
+
+
+def capture(argv):
+    """Run a read-only query with the helper's own environment; (exit status, stdout)."""
+    done = subprocess.run(argv, capture_output=True, text=True, env=APT_ENV)
+    return done.returncode, done.stdout
+
+
+def exact_package(verb, package):
+    """Refuse unless `package` names exactly one real package.
+
+    Defence in depth behind APT_EXACT_NAMES, which is undocumented: should an apt
+    stop honouring it, an operand like `linux-image.+` would again act on every
+    package its regular expression matches. This asks the database instead, and
+    compares the names it returns with the operand as strings, so it holds whatever
+    apt would have done with the operand.
+
+    `install` asks apt-cache, which knows the packages in the archive lists.
+    `remove`, `purge`, `hold` and `unhold` ask dpkg-query, which knows the packages
+    dpkg has a record of, and which treats `*`, `?` and `[` as globs; none of them
+    passes the character class. `name:arch` is kept, `=version` is only for apt-cache.
+    A name that is only a virtual package, or a package dpkg has never seen, is
+    refused rather than guessed at.
+    """
+    name = re.split(r"[:=]", package, maxsplit=1)[0]
+    if verb == "install":
+        code, out = capture([APT_CACHE, "show", "--no-all-versions", "--", package])
+        found = re.findall(r"(?m)^Package: (\S+)$", out)
+    else:
+        code, out = capture([DPKG_QUERY, "-W", "-f=${Package}\\n", "--", package.split("=", 1)[0]])
+        found = out.split()
+    if code != 0 or not found or any(f != name for f in found):
+        raise ValueError("that is not exactly one existing package")
+
+
+def rpm_package(value):
+    """Mirrors validated_install_package, which every layering action applies.
+
+    The rule is apt_package's for `install`: a leading letter or digit (no
+    option), no `/` (no local path or URL), no `.rpm` or `.deb` suffix (no local
+    file), no trailing `-`. rpm-ostree installs a local `.rpm` and runs its
+    scriptlets as root in the next deployment, so a path is the whole risk.
+    tests/release/action-steps.test.sh runs the daemon's corpus,
+    crates/sysknife-daemon/tests/data/rpm-ostree-parity.txt, through this.
+    """
+    return apt_package(value, "install")
+
+
+def rebase_ref(value):
+    """Mirrors validated_rebase_ref: validated_safe_arg, no local source, no unverified image.
+
+    A rebase target is an ostree `remote:ref` or a registry image. Split on `:`,
+    no part may be a local image transport (`oci:/path`, `dir:/path`, ...), start
+    with `.`, or start with `/` unless it is the `//` of `docker://`. `..` and
+    `@/` (an ostree transport's repository path) are refused anywhere.
+    """
+    safe(value)
+    previous = ""
+    for part in value.split(":"):
+        lower = part.lower()
+        if (lower in LOCAL_IMAGE_TRANSPORTS or lower in UNVERIFIED_IMAGE_TRANSPORTS
+                or part.startswith(".")
+                or (part.startswith("/") and not (previous == "docker" and part.startswith("//")))):
+            raise ValueError("a rebase target must be a remote ref or a registry image")
+        previous = lower
+    if ".." in value or "@/" in value:
+        raise ValueError("a rebase target must be a remote ref or a registry image")
+    return value
+
+
+def karg_token(value):
+    """Mirrors validated_kernel_arg_token: one boot-line token, no leading `-`.
+
+    The boot line is split on whitespace, so a space, tab, newline or quote
+    would carry a second, unscreened token behind the first.
+    """
+    if len(value) > 254 or not re.fullmatch(r"[A-Za-z0-9._:/+@=,][A-Za-z0-9._:/+@=,-]*", value):
+        raise ValueError("invalid kernel argument")
+    return value
+
+
+def karg_normalized(value):
+    """Lowercase, with `-` read as `_` in the key and never in the value.
+
+    The kernel's parameq() (kernel/params.c) and systemd's
+    proc_cmdline_key_streq() treat the two as one character in a parameter
+    name. Mirrors normalized_kernel_arg in crates/sysknife-daemon/src/executor.rs.
+    """
+    key, eq, rest = value.lower().partition("=")
+    return key.replace("-", "_") + eq + rest
+
+
+def karg_append(value):
+    """Mirrors validated_safe_kernel_arg: karg_token, then the allowlist."""
+    key, eq, rest = karg_normalized(karg_token(value)).partition("=")
+    if not (key in KARG_FLAGS + KARG_HARDENING_FLAGS if not eq
+            else (rest and key in KARG_VALUE_KEYS)
+            or (key in KARG_LIST_VALUES and all(v in KARG_LIST_VALUES[key] for v in rest.split(",")))
+            or rest in KARG_HARDENING_VALUES.get(key, ())):
+        raise ValueError("that kernel argument is not on the allowlist")
+    return value
+
+
+def karg_delete(value):
+    """Mirrors validated_safe_kernel_arg_removal: an ordinary key or a known downgrade."""
+    lower = karg_normalized(karg_token(value))
+    key = lower.split("=", 1)[0]
+    if not (lower in KARG_WEAKENING or key in KARG_FLAGS or key in KARG_VALUE_KEYS
+            or key in KARG_LIST_VALUES):
+        raise ValueError("refusing to delete a hardening or unknown kernel argument")
+    return value
+
+
+def rpm_ostree_argv(values):
+    """The rpm-ostree argv for `rpm-ostree <verb> <operand>...`, and nothing else.
+
+    `/usr/bin/rpm-ostree <subcommand> *` grants took rpm-ostree's own options and
+    any operand: `kargs --append=init=/bin/sh`, `install /path/to/local.rpm`,
+    `rebase <any image>`, `override replace <local rpm>`, as root with no
+    preview, no approval receipt and no audit row. sudoers cannot say "and no
+    options", so the verbs are an allowlist, every operand is validated, and the
+    only options in the argv are the ones written here.
+    """
+    if not values or values[0] not in RPM_OSTREE_VERBS:
+        raise ValueError("unsupported rpm-ostree operation")
+    verb, operands = values[0], values[1:]
+    if verb == "install" and operands:
+        return [RPM_OSTREE, "install", "--idempotent", *map(rpm_package, operands)]
+    if verb == "uninstall" and operands:
+        return [RPM_OSTREE, "uninstall", *map(rpm_package, operands)]
+    if verb == "replace" and len(operands) == 2:
+        old, new = map(rpm_package, operands)
+        return [RPM_OSTREE, "install", new, "--uninstall", old]
+    if verb == "override-remove" and len(operands) == 1:
+        return [RPM_OSTREE, "override", "remove", rpm_package(operands[0])]
+    if verb == "rebase" and len(operands) == 1:
+        return [RPM_OSTREE, "rebase", rebase_ref(operands[0])]
+    if verb == "kargs" and len(operands) % 2 == 0:
+        argv = [RPM_OSTREE, "kargs"]
+        for op, token in zip(operands[::2], operands[1::2]):
+            if op == "append":
+                argv.append("--append=" + karg_append(token))
+            elif op == "delete":
+                argv.append("--delete=" + karg_delete(token))
+            else:
+                raise ValueError("invalid kernel argument operation")
+        return argv
+    raise ValueError("unsupported rpm-ostree operation or argument count")
+
+
 def safe(value):
     if not re.fullmatch(r"[A-Za-z0-9._:/+@][A-Za-z0-9._:/+@-]{0,253}", value):
         raise ValueError("invalid argument")
@@ -70,7 +443,12 @@ def safe(value):
 
 
 def username(value):
-    if not re.fullmatch(r"[A-Za-z0-9._][A-Za-z0-9._-]{0,31}", value):
+    """Mirrors validated_username: no leading `-` or `.`, no `..` anywhere.
+
+    Names reach /home/<name>/ paths, so `..` and a leading dot are traversal.
+    """
+    if (not re.fullmatch(r"[A-Za-z0-9_][A-Za-z0-9._-]{0,31}", value)
+            or ".." in value):
         raise ValueError("invalid account name")
     return value
 
@@ -197,8 +575,8 @@ def ensure_local_group(group):
         os.fsync(stream.fileno())
 
 
-def run(argv):
-    subprocess.run(argv, check=True, env=SYSTEM_ENV)
+def run(argv, env=SYSTEM_ENV):
+    subprocess.run(argv, check=True, env=env)
 
 
 def main(args):
@@ -238,19 +616,81 @@ def main(args):
         # Same shape: `usermod --lock *` also admitted
         # `usermod --lock -o -u 0 <user>`, which makes an existing account uid 0.
         flag = "--lock" if op == "user-lock" else "--unlock"
-        run(["/usr/sbin/usermod", flag, username(values[0])])
+        name = username(values[0])
+        if name in CRITICAL_ACCOUNTS:
+            raise ValueError("refusing to change the lock on a critical system account")
+        run(["/usr/sbin/usermod", flag, name])
     elif op == "unit" and len(values) == 2:
         # `systemctl start *` put the unit name in the wildcard, so
         # `systemctl start debug-shell.service` matched: an unauthenticated root
         # shell on tty9, past the daemon's own denylist.
         verb, unit = values
-        if verb in ACTIVATING_VERBS:
-            unit = activatable_unit(unit)
-        elif verb in QUIESCING_VERBS:
-            unit = unit_name(unit)
-        else:
+        if verb not in ACTIVATING_VERBS and verb not in QUIESCING_VERBS:
             raise ValueError("invalid unit operation")
+        unit = unit_name(unit)
+        if verb in ACTIVATING_VERBS:
+            activatable_unit(unit)
+        if verb in STOPPING_VERBS:
+            stoppable_unit(unit)
         run(["/usr/bin/systemctl", verb, unit])
+    elif op == "signal" and len(values) == 2:
+        # SignalProcess (`signal <SIG> <pid>`) and the action-timeout reaper
+        # (`signal <SIG> -<pgid>`). os.kill, so there is no kill(1) argv left
+        # for a caller to extend.
+        name, target = values
+        if name not in SIGNALS:
+            raise ValueError("invalid signal")
+        os.kill(kill_target(target), getattr(signal, "SIG" + name))
+    elif op == "user-delete" and len(values) == 1:
+        # The bare `userdel` grant admitted `userdel -R <dir> <name>`. A
+        # `userdel -- *` grant would not have helped: shadow-utils scans argv
+        # for -R/--root and -P/--prefix before getopt, past any `--`. groupadd,
+        # groupdel and chage below share that scan (GHSA-8rx7-g2jg-5pxg).
+        name = username(values[0])
+        if name in CRITICAL_ACCOUNTS:
+            raise ValueError("that account is protected")
+        run(["/usr/sbin/userdel", name])
+    elif op == "group-create" and values[:-1] in ([], ["--system"]) and values:
+        # The bare `groupadd` grant admitted `groupadd -o -g 0 <name>`.
+        run(["/usr/sbin/groupadd", *values[:-1], username(values[-1])])
+    elif op == "group-delete" and len(values) == 1:
+        group = username(values[0])
+        if group in CRITICAL_GROUPS:
+            raise ValueError("that group is protected")
+        run(["/usr/sbin/groupdel", group])
+    elif op == "password-aging" and len(values) in (3, 5, 7):
+        # The bare `chage` grant admitted `-R <dir>` and `chage -E 0 root`, and
+        # the day counts are option values sudoers cannot pin.
+        name = username(values[0])
+        argv, seen = ["/usr/bin/chage"], set()
+        for flag, days in zip(values[1::2], values[2::2]):
+            if (flag not in AGING_FLAGS or flag in seen
+                    or not re.fullmatch(r"[0-9]{1,5}", days)):
+                raise ValueError("invalid password-aging option")
+            seen.add(flag)
+            argv.extend([flag, days])
+        run([*argv, name])
+    elif op == "lv-extend" and len(values) == 3:
+        # `lvextend --config global/fsadm_executable=<path>` named the program
+        # `-r` runs as root, and the size sits mid-argv where sudoers cannot
+        # pin it, so the LVM verbs build their own argv here.
+        vg, lv, size = values
+        run(["/usr/sbin/lvextend", "-L", lvm_size(size), "-r",
+             f"{lvm_name(vg)}/{lvm_name(lv)}"])
+    elif op == "lv-create" and len(values) == 3:
+        vg, name, size = values
+        run(["/usr/sbin/lvcreate", "-L", lvm_size(size), "-n", lvm_name(name), lvm_name(vg)])
+    elif op == "lv-snapshot" and len(values) == 4:
+        vg, origin, snapshot, size = values
+        run(["/usr/sbin/lvcreate", "-s", "-L", lvm_size(size), "-n", lvm_name(snapshot),
+             f"{lvm_name(vg)}/{lvm_name(origin)}"])
+    elif op == "apt":
+        argv = apt_argv(values)
+        if len(values) == 2:
+            exact_package(values[0], values[1])
+        run(argv, env=APT_ENV)
+    elif op == "rpm-ostree":
+        run(rpm_ostree_argv(values))
     elif op in ("group-add", "group-remove") and len(values) == 2:
         name, group = map(username, values)
         ensure_local_group(group)

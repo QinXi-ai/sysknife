@@ -41,6 +41,10 @@ PREFIX = "sysknife-"
 # where logs are allowed to live does.
 LOG_ROOT = "/var/log/"
 
+# Every pattern below is applied with fullmatch(). With match(), `$` also
+# matches just before a trailing newline, so `name\n` passed the charset and
+# then missed every exact-membership check after it.
+# tests/release/helper-anchoring.test.sh drives each helper with one.
 NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
 PATH_RE = re.compile(r"^/[A-Za-z0-9/._*-]{1,255}$")
 HOST_RE = re.compile(r"^[A-Za-z0-9.:_-]{1,255}$")  # hostname or IPv4/IPv6-ish
@@ -61,7 +65,7 @@ def valid_log_glob(path: str) -> bool:
     Strict: the log directory itself is not a rotation target, and `/var/logs`
     must not pass on a bare string prefix match against `/var/log`.
     """
-    if not PATH_RE.match(path) or ".." in path:
+    if not PATH_RE.fullmatch(path) or ".." in path:
         return False
     normalised = os.path.normpath(path)
     # normpath collapses `//x` to `/x` but preserves a leading `//` (POSIX
@@ -69,6 +73,25 @@ def valid_log_glob(path: str) -> bool:
     if path.startswith("//"):
         return False
     return normalised.startswith(LOG_ROOT) and normalised != LOG_ROOT.rstrip("/")
+
+
+# Mirrors LOG_EVIDENCE_DIRS in crates/sysknife-daemon/src/actions/validate.rs.
+LOG_EVIDENCE_DIRS = ("/var/log", "/var/log/audit", "/var/log/journal")
+
+
+def sweeps_log_evidence(path: str) -> bool:
+    """True if `path` ends in a bare wildcard over the log evidence.
+
+    Mirrors log_glob_sweeps_evidence. `/var/log/*`, `/var/log/audit/*` and
+    `/var/log/journal/*` name every file in the directories that hold the
+    host's record of what happened, and a wildcard directory such as
+    `/var/log/*/*` sweeps the audit and journal trees with it.
+    """
+    parts = [p for p in path.split("/") if p not in ("", ".")]
+    if not parts or parts[-1].strip("*"):
+        return False
+    parent = parts[:-1]
+    return "/" + "/".join(parent) in LOG_EVIDENCE_DIRS or any("*" in p for p in parent)
 
 
 def atomic_write(path: str, content: str, mode: int = 0o644) -> None:
@@ -113,7 +136,7 @@ def write_validated(dest: str, body: str, validate_cmd: list, error_prefix: str)
 
 
 def op_logrotate(args) -> None:
-    if not NAME_RE.match(args.name):
+    if not NAME_RE.fullmatch(args.name):
         die(f"invalid name {args.name!r}")
     if not valid_log_glob(args.path):
         die(f"log path {args.path!r} must be a path under {LOG_ROOT}")
@@ -121,6 +144,12 @@ def op_logrotate(args) -> None:
         die(f"frequency must be one of {sorted(FREQ)}")
     if args.rotate < 0 or args.rotate > 1000:
         die("rotate count out of range [0, 1000]")
+    # A Dev-tier caller reaches this through ConfigureLogRotation, and root's
+    # logrotate deletes what `rotate 0` leaves behind (GHSA-68v6-p23h-fwcf).
+    if sweeps_log_evidence(args.path):
+        die(f"log path {args.path!r} is a bare wildcard over the host's log evidence")
+    if "*" in args.path and args.rotate < 1:
+        die("a wildcard log path needs rotate >= 1")
 
     body = (
         f"# Managed by SysKnife (configure_log_rotation: {args.name}).\n"
@@ -138,7 +167,7 @@ def op_logrotate(args) -> None:
 
 
 def op_rm_logrotate(args) -> None:
-    if not NAME_RE.match(args.name):
+    if not NAME_RE.fullmatch(args.name):
         die(f"invalid name {args.name!r}")
     dest = os.path.join(LOGROTATE_D, PREFIX + args.name)
     if os.path.exists(dest):
@@ -146,7 +175,7 @@ def op_rm_logrotate(args) -> None:
 
 
 def op_rsyslog_forward(args) -> None:
-    if not HOST_RE.match(args.host) or ".." in args.host:
+    if not HOST_RE.fullmatch(args.host) or ".." in args.host:
         die(f"invalid host {args.host!r}")
     if args.port < 1 or args.port > 65535:
         die("port out of range")

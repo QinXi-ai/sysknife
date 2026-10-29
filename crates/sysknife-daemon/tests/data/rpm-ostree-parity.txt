@@ -1,0 +1,314 @@
+# One rpm-ostree operand per line, and what each validator must say about it.
+#
+#   <kind> <ok|refuse> <operand>
+#
+# The daemon validates these operands in crates/sysknife-daemon/src/executor.rs and
+# crates/sysknife-daemon/src/actions/validate.rs, and the root-owned helper
+# packaging/sysknife-action-steps validates them again, because the helper is reachable
+# through sudo without the daemon. Two copies of a rule drift, so both read THIS file and
+# must give the same answer for every line:
+#
+#   * the Rust unit test `rpm_ostree_parity_corpus_agrees_with_the_daemon_validators`
+#   * tests/release/action-steps.test.sh, class RpmOstreeVerb
+#
+# Kinds map to validators:
+#
+#   package  validated_install_package      (every layering action; helper rpm_package)
+#   ref      validated_rebase_ref           (RebaseSystem; helper rebase_ref)
+#   append   validated_safe_kernel_arg      (SetKernelArguments add; helper karg_append)
+#   delete   validated_safe_kernel_arg_removal (SetKernelArguments remove; helper karg_delete)
+#
+# append and delete follow one allowlist, held in all three copies (executor.rs,
+# grub-kargs-edit, action-steps): an append is accepted only for a listed key, and a delete only
+# for an ordinary listed key or an exact downgrade in KARG_WEAKENING.
+#
+# The operand is everything after the second space, so it may contain spaces. Lines that
+# start with `#` and blank lines are skipped. Any other line that does not parse fails the
+# test, so a typo cannot silently drop a case.
+
+# --- package: names, versions, arches ---
+package ok podman
+package ok vim-enhanced
+package ok python3.12
+package ok g++
+package ok libstdc++
+package ok kernel-devel-6.11.4-301.fc41.x86_64
+package ok podman:x86_64
+package ok podman=5.2.3
+package ok 0ad
+package ok abbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+# --- package: options, local files, URLs, globs, whitespace ---
+package refuse -A
+package refuse --apply-live
+package refuse --uninstall=bash
+package refuse -
+package refuse /tmp/x.rpm
+package refuse ./x.rpm
+package refuse x.rpm
+package refuse x.deb
+package refuse ../x
+package refuse https://203.0.113.7/x.rpm
+package refuse file:///tmp/x.rpm
+package refuse tmp/x
+package refuse .hidden
+package refuse _x
+package refuse podman-
+package refuse pod*
+package refuse pod?
+package refuse pod man
+package refuse podman;id
+package refuse podman$x
+package refuse ubuntu-desktop^
+package refuse abbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+
+# --- ref: ostree refs and registry images ---
+ref ok fedora/41/x86_64/silverblue
+ref ok fedora:fedora/41/x86_64/silverblue
+ref ok fedora:fedora/41/x86_64/kinoite
+ref refuse ostree-unverified-registry:quay.io/fedora/fedora-silverblue:41
+ref ok ostree-image-signed:docker://quay.io/fedora/fedora-silverblue:41
+ref ok ostree-remote-image:fedora:docker://quay.io/fedora/fedora-kinoite:41
+ref refuse ostree-unverified-registry:ghcr.io/ublue-os/bluefin@sha256:0123456789abcdef
+ref ok fedora-stable
+# --- ref: options and local sources ---
+ref refuse -b
+ref refuse --experimental
+ref refuse /tmp/repo
+ref refuse ./repo
+ref refuse ../repo
+ref refuse .repo
+ref refuse fedora:../../tmp/x
+ref refuse x:/tmp/repo
+ref refuse file:///tmp/repo
+ref refuse ostree-unverified-image:oci:/tmp/img
+ref refuse ostree-unverified-image:OCI:/tmp/img
+ref refuse ostree-unverified-image:oci-archive:/tmp/img.tar
+ref refuse ostree-unverified-image:dir:/tmp/img
+ref refuse ostree-unverified-image:docker-archive:/tmp/img.tar
+ref refuse ostree-unverified-image:docker-daemon:x
+ref refuse ostree-unverified-image:containers-storage:localhost/x
+ref refuse ostree-unverified-image:ostree:x@/tmp/repo
+ref refuse ostree-unverified-image:sif:/tmp/x.sif
+ref refuse ostree-unverified-image:tarball:/tmp/x.tar
+ref refuse ostree-unverified-image:docker:/tmp/x
+ref refuse fedora 41
+ref refuse fedora;id
+ref refuse fedora=41
+
+# --- append: ordinary arguments ---
+append ok quiet
+append ok nomodeset
+append ok console=ttyS0,115200
+append refuse rd.luks.uuid=luks-0123
+append refuse systemd.unit=multi-user.target
+append ok intel_iommu=on
+append ok mitigations=auto
+append refuse breakfast
+# --- append: one token only, and no leading `-` ---
+append refuse quiet init=/bin/sh
+append refuse -b
+append refuse --append=quiet
+append refuse quiet"
+append refuse quiet'
+append refuse quiet;id
+# --- append: root shells and weaker boots ---
+append refuse init=/bin/sh
+append refuse INIT=/bin/sh
+append refuse rdinit=/bin/sh
+append refuse single
+append refuse SINGLE
+append refuse s
+append refuse 1
+append refuse 3
+append refuse emergency
+append refuse rescue
+append refuse rd.emergency
+append refuse rd.rescue
+append refuse emergency=1
+append refuse systemd.unit=debug-shell.service
+append refuse systemd.unit=emergency.target
+append refuse systemd.unit=rescue.target
+append refuse systemd.unit=runlevel1.target
+append refuse rd.systemd.unit=emergency.target
+append refuse systemd.debug_shell
+append refuse systemd.debug-shell=1
+append refuse rd.systemd.debug_shell
+append refuse systemd.run=/tmp/x
+append refuse systemd.run_success_action=reboot
+append refuse rd.break
+append refuse rd.break=pre-mount
+append refuse break
+append refuse selinux=0
+append refuse enforcing=0
+append refuse security=none
+append refuse apparmor=0
+append refuse lockdown=none
+append ok lockdown=integrity
+append refuse mitigations=off
+append refuse pti=off
+append refuse nosmap
+append refuse nosmep
+append refuse module_blacklist=x
+
+# --- delete: ordinary arguments, and downgrades (removing one hardens the host) ---
+delete ok quiet
+delete ok rhgb
+delete ok nomodeset
+delete ok mitigations=off
+delete ok selinux=0
+delete ok lockdown=none
+delete ok module.sig_enforce=0
+delete ok nokaslr
+delete ok init=/bin/sh
+# --- delete: one token only, and protections ---
+delete refuse quiet rhgb
+delete refuse -b
+delete refuse lockdown=confidentiality
+delete refuse LOCKDOWN=integrity
+delete refuse module.sig_enforce=1
+delete refuse selinux=1
+delete refuse enforcing=1
+delete refuse security=selinux
+delete refuse apparmor=1
+delete refuse pti=on
+delete refuse mitigations=auto,nosmt
+delete refuse init_on_alloc=1
+delete refuse slab_nomerge
+delete refuse nosmt
+delete refuse kaslr
+delete refuse iommu=force
+delete refuse intel_iommu=on
+
+# --- delete: a bare key removes the key's only value (ostree_kernel_args_delete) ---
+delete refuse lockdown
+delete refuse module.sig_enforce
+delete refuse selinux
+delete refuse enforcing
+delete refuse apparmor
+delete refuse security
+delete refuse iommu
+delete refuse mitigations
+delete refuse init_on_alloc
+delete refuse lsm
+delete refuse audit
+delete refuse kaslr=1
+delete refuse lsm=landlock,lockdown,yama
+delete refuse audit=1
+delete ok audit=0
+delete ok rhgb=1
+# --- append: units pulled in with wants, and the remaining weakenings ---
+append refuse systemd.wants=debug-shell.service
+append refuse rd.systemd.wants=emergency.target
+append refuse systemd.wants=sshd.service
+append refuse lsm=landlock
+append refuse rd.shell
+append refuse systemd.mask=auditd.service
+append refuse rd.systemd.mask=auditd.service
+append refuse modprobe.blacklist=apparmor
+append refuse audit=0
+append refuse nopti
+append refuse nospectre_v1
+append refuse nospectre_v2
+append refuse spectre_v2=off
+append refuse spec_store_bypass_disable=off
+append refuse nokaslr
+append refuse audit=1
+append refuse spectre_v2=on
+# --- rebase: `..` and `@/` where no other rule sees them ---
+ref refuse fedora/../../tmp/x
+ref refuse ostree-unverified-registry:x@/tmp/repo
+
+# --- rebase: an unverified image is any OS image the caller names ---
+ref refuse OSTREE-UNVERIFIED-REGISTRY:quay.io/x:1
+ref refuse ostree-unverified-image:docker://quay.io/x:1
+ref refuse ostree-unverified-image:registry:quay.io/x:1
+ref ok ostree-image-signed:docker://quay.io/fedora/fedora-silverblue:41
+ref ok ostree-remote-image:fedora:docker://quay.io/fedora/fedora-silverblue:41
+ref ok ostree-image-signed:docker://ghcr.io/ublue-os/bluefin:stable
+ref ok fedora:fedora/41/x86_64/silverblue
+
+# --- `-` and `_` are one character in a parameter name (kernel parameq(), systemd
+#     proc_cmdline_key_streq()); the value keeps its own spelling ---
+append refuse spectre-v2=off
+append refuse module-blacklist=apparmor
+append refuse Spec-Store-Bypass-Disable=off
+append refuse systemd.debug-shell=1
+append refuse rd.systemd.debug-shell
+append refuse nospectre-bhb
+append refuse tsx-async-abort=off
+append refuse nospectre-v2
+append refuse systemd.wants=foo-bar.service
+append refuse systemd.unit=debug-shell.service
+delete refuse module.sig-enforce=1
+delete refuse init-on-alloc=1
+delete refuse randomize-kstack-offset=on
+delete refuse page-alloc.shuffle=1
+delete ok init-on-alloc=0
+delete ok module.sig-enforce=0
+# --- every spelling of off for a switch the kernel reads as a boolean or as `off` ---
+append refuse audit=off
+append refuse audit=n
+append refuse audit=no
+append refuse audit=false
+append refuse AUDIT=OFF
+append refuse mitigations=false
+append refuse pti=no
+append refuse spectre_v2=n
+append refuse module.sig_enforce=no
+append refuse init_on_free=false
+append refuse page_alloc.shuffle=0
+append refuse randomize_kstack_offset=off
+append refuse init_on_alloc=0
+# --- the remaining mitigation switches (kernel-parameters.txt) ---
+append refuse mds=off
+append refuse tsx_async_abort=off
+append refuse mmio_stale_data=off
+append refuse retbleed=off
+append refuse srbds=off
+append refuse l1tf=off
+append refuse spectre_bhi=off
+append refuse gather_data_sampling=off
+append refuse reg_file_data_sampling=off
+append refuse nospec_store_bypass_disable
+append refuse nospectre_bhb
+append refuse mds=full
+append refuse retbleed=auto
+append refuse l1tf=flush
+append refuse spectre_bhi=on
+append refuse gather_data_sampling=force
+delete refuse mds=full
+delete refuse mds
+delete refuse tsx_async_abort=full
+delete refuse mmio_stale_data=full
+delete refuse retbleed=auto
+delete refuse srbds=on
+delete refuse l1tf=flush
+delete refuse spectre_bhi=on
+delete refuse gather_data_sampling=force
+delete refuse reg_file_data_sampling=on
+delete refuse spectre_v2=on
+delete refuse spec_store_bypass_disable=on
+delete ok mds=off
+delete ok retbleed=off
+delete refuse audit=false
+delete refuse pti=no
+delete ok spectre_v2=off
+# --- downgrades: refused on append by every copy ---
+append refuse debugfs=on
+append refuse iommu=off
+append refuse intel_iommu=off
+# --- resume= boots a hibernation image; rd.driver.blacklist= takes only GPU drivers ---
+append refuse resume=/dev/sdb1
+append refuse resume_offset=1
+append refuse rd.driver.blacklist=tpm_crb
+append refuse rd.driver.blacklist=nouveau,dm_crypt
+append refuse rd.driver.blacklist=
+append refuse rd.driver.blacklist=nouveau,
+append ok rd.driver.blacklist=nouveau,nvidia
+append ok rd.driver.blacklist=radeon,amdgpu,i915
+delete refuse resume=/dev/sdb1
+delete refuse resume
+delete ok rd.driver.blacklist=nouveau
+# --- a listed key whose value carries a second boot-line token ---
+append refuse console=tty0 init=/bin/sh
+delete refuse console=tty0 lockdown=integrity

@@ -12,6 +12,200 @@ Releases before `0.2.5` predate the public launch; their notes live in the
 
 ## [Unreleased]
 
+### Security
+
+- **PostgreSQL chains job outcomes, and one edited column no longer stops
+  `audit verify`.** The 0.19.0 fix that chains every status change reached
+  SQLite only. On PostgreSQL no write path appended a `status_*` event and
+  `audit verify` left the status check unset, so anyone with `UPDATE` on
+  `transactions` could rewrite a succeeded job as canceled and verification
+  still exited 0. PostgreSQL now appends the same events in the same database
+  transaction as each status change and runs the same comparison as SQLite.
+  Migration 5 marks the rows that exist when it runs, because no earlier
+  release chained their outcomes there: an unsigned terminal status on one of
+  them is inconclusive (exit 2), not tampering. A binary older than this
+  release refuses to start against a migrated database, as with earlier
+  migrations. Separately, the chain walks stopped with exit 2 at the first row
+  carrying an unknown `chain_version` or a foreign `key_id`, which hid any
+  forged or deleted row after it. Both walks now record such a row, check the
+  links around it, verify every later row and report exit 1 if any is broken.
+  A row with a foreign `key_id` that the loaded key still verifies counts as
+  verified (GHSA-2hvc-9x2h-pq2m).
+
+- **`sysknife "<intent>"` shows what you approve, keeps model text off your
+  terminal, and saves preferences only when you say yes.** The plan now prints
+  each step's parameters, and each step header prints the daemon's proposed
+  change and expected side effects. MEDIUM steps get the post-preview
+  confirmation HIGH steps already had, so you answer with the resolved change
+  on screen. If a parameter block or a proposed change runs past 40 lines or
+  512 columns, the run refuses to ask, the way `sysknife approve` refuses
+  without `--full`; `--json` prints both in full. `--yes` and `--max-risk`
+  behave as before. During planning, the spinner shows `unknown tool` for a
+  tool name the planner never offered, and the stderr notices for unknown tools
+  and rejected plans strip escapes, bidi and TAG characters and fold line
+  breaks. `remember` and `forget` no longer write `prefs.md` inside the tool
+  loop. The plan lists them, you answer a separate question, and SysKnife
+  writes nothing under `--dry-run`, `--yes`, `--non-interactive`, for a plan
+  you reject, or through `sysknife_plan` over MCP, which wrote the file before
+  this change (GHSA-23mr-j544-74x6).
+- **MCP tool errors reach the assistant normalised and enveloped, like
+  results.** A failed read-only query carried the host command's stderr to the
+  calling assistant raw, TAG characters and ANSI escapes included, and so did
+  planning and preview errors. Every tool error now passes the same normaliser
+  as a result, sits inside an `<untrusted_tool_output>` envelope, and stops at
+  8 KiB (GHSA-g9fw-wvj3-hcgj).
+
+- **Helper screens refuse a trailing newline, and versioned interpreter names
+  count as shells.** Ten `packaging/` helpers validated with a `$`-anchored
+  `re.match()`, which accepts `bash\n`, so a direct `sudo` call could step past
+  the exact-match denylists in `sudoers-edit` and `grub-kargs-edit`. Every
+  helper now uses `fullmatch()`, and `sudoers-edit` checks command paths before
+  its shell lookup. Both copies of the shell-equivalent list also strip version
+  and packaging suffixes, so both refuse a `NOPASSWD` grant for `python3.12`,
+  `perl5.38.2`, `ruby3.2` or `vim.basic`. (GHSA-3448-xjpf-cc4j)
+
+- **`fail2ban-ban` refuses IPv6 scope IDs.** Python's `ipaddress` accepts almost
+  any text after `%`, the daemon's parser refuses every scope ID, and fail2ban
+  splits an unescaped space into extra firewall arguments under a root shell.
+  The helper anchors the jail name with `fullmatch()`, and the sudoers grant
+  test now lists `fail2ban-client set ... actionban` as a root escape.
+  (GHSA-4gp9-9fmc-wgqp)
+
+- **The kernel-argument screens refuse systemd's boot-mode and run tokens, and
+  `user-lock` refuses critical accounts.** Both copies accepted `systemd.run=`,
+  `emergency`, `rescue`, `rdinit=`, `rd.break` and `rd.systemd.unit=`, each a
+  root shell or a root command at the next boot. They now refuse those, `-b`,
+  runlevels 2 to 5 and their `rd.` forms. The daemon's copy also requires each
+  `SetKernelArguments` value to be one boot-line token from the helper's
+  character set plus `,`, so whitespace, quotes and control bytes no longer
+  carry a second argument past the screen. Review kept finding spellings past
+  the denylists, so all three kernel-argument screens (the daemon,
+  `grub-kargs-edit` and the `rpm-ostree kargs` verb of `action-steps`) now
+  accept a fixed list of keys instead: display and boot flags such as `quiet`,
+  ordinary keys such as `console=`, `rd.driver.blacklist=` with GPU drivers
+  only, and hardening keys only at their hardening values, such as
+  `lockdown=integrity`. `root=` and `resume=` are not on the list. They read
+  `-` and `_` as one character in a key, as the kernel does. Removal is limited
+  to the ordinary keys and to known downgrades such as `mitigations=off`, so a
+  hardening argument cannot be dropped, by its full spelling or by its bare key.
+  The `action-steps` helper now refuses
+  to lock or unlock `root`, `daemon`, `bin`, `sys`, `sudo` and `adm`, as the
+  daemon does, and `UnlockUserAccount` applies the same list. The helper also
+  refuses account names that start with `.` or contain `..`, as the daemon
+  does. (GHSA-76v3-hw9r-58pm)
+
+- **`grub-kargs-edit` and the daemon agree on `lockdown=`.** The daemon refused
+  the prefix and the helper only `lockdown=none`, so a direct call could set a
+  lockdown mode the daemon refused. Both now accept only `integrity` and
+  `confidentiality`. (GHSA-8rx7-g2jg-5pxg)
+
+- **`scheduled-job-edit` checks the whole systemd unit load path.** It looked
+  for collisions in `/etc/systemd/system` alone, so a job named `daemon` could
+  write a root oneshot over SysKnife's own unit in `/usr/lib/systemd/system`. It
+  now refuses a job whose unit exists in any load-path directory and names that
+  directory. (GHSA-7p9v-4r44-fh7c)
+
+- **`verify-action-pins` checks which ref a version comment resolved to.** It
+  looked up `git/ref/tags/<comment>` and compared only the commit. GitHub
+  normalises `..` in that path, so a comment such as
+  `# v4.2.2/../../pull/1/head` resolved to a pull-request head and the pin
+  passed as a release. The check now requires the API to answer with
+  `refs/tags/<comment>` exactly. The script runs in CI only; no shipped binary
+  contains it. (GHSA-j754-mr7x-597h)
+
+- **Fifteen sudoers grants that accepted any arguments now accept only the argv
+  SysKnife builds, and the `kill` grant is gone.** A grant that names a command
+  and no arguments lets sudo run it with any arguments. For several of these
+  that meant root code execution for whoever holds the `sysknife` account:
+  `apt-mark hold bash -o Dir::Bin::dpkg=/tmp/x` and
+  `lvextend --config global/fsadm_executable=/tmp/x -r ...` run a program the
+  caller chose, and `gpasswd --add <account> sudo` hands out root-equivalent
+  membership. `userdel`, `groupadd`, `groupdel`, `chage`, `lvextend` and
+  `lvcreate` now go through new verbs of `/usr/lib/sysknife/action-steps`,
+  because shadow-utils reads `-R <chroot>` even after `--` and an LVM size sits
+  where sudoers cannot pin it. `apt-mark`, `aa-enforce` and `aa-complain` take
+  their operand after a literal `--`, `add-apt-repository` takes `--ppa`, and
+  `ufw`, `aa-status`, `canonical-livepatch` and `do-release-upgrade` get the
+  exact argv the catalogue builds. The `gpasswd` grant had no caller and is
+  removed. `SignalProcess` and the action-timeout reaper move from
+  `kill -s *`, which admitted `kill -s KILL -1` and `kill -s KILL 1`, to
+  `action-steps signal`, which refuses pid and pgid -1, 0 and 1. A direct caller
+  can still add any PPA, as `AddPpa` can. (GHSA-8rx7-g2jg-5pxg)
+
+- **Dev-tier callers lose three routes to Admin outcomes, and the `sysknife`
+  account loses systemd unit control over polkit.** `StartService` and
+  `RestartService` are Medium and accepted `reboot.target`, `poweroff.target`
+  and the services behind them, which is what the High `RebootSystem` does. The
+  daemon and `action-steps` now refuse the power-state and sleep units on every
+  verb that brings a unit up. `StopService` and `RestartService` refuse
+  `sysknife-daemon`, `auditd`, `rsyslog`, `systemd-journald`, `ssh`, `sshd` and
+  the other units `SetServiceResourceLimits` already protected.
+  `ConfigureLogRotation` refuses a bare `*` over `/var/log`, `/var/log/audit`
+  or `/var/log/journal` and needs a `rotate` of at least 1 for any wildcard, in
+  the daemon and in `log-edit`. `50-sysknife.rules` drops `manage-units` and
+  `manage-unit-files`: `manage-units` authorises `StartTransientUnit`, a root
+  command line over D-Bus, and no SysKnife code path used either.
+  (GHSA-68v6-p23h-fwcf)
+
+- **The `apt-get` and `apt-mark` sudoers grants are gone, and a package name can
+  no longer flip an apt action or match more than one package.** The `apt-get`
+  grant ran `env DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a
+  /usr/bin/apt-get *`. It pinned the environment prefix and left every argument
+  open, so a holder of the `sysknife` account could pass apt's own options and
+  run a command as root with no preview, approval receipt or audit row.
+  `AptUpdate`, `AptUpgrade`, `AptInstall`, `AptRemove`, `AptPurge`,
+  `AptAutoremove`, `AptHold` and `AptUnhold` now go through a new `apt` verb of
+  `/usr/lib/sysknife/action-steps`. The verb allowlists the eight subcommands,
+  accepts no option, sets `DEBIAN_FRONTEND` and `NEEDRESTART_MODE` in an
+  environment of its own, and puts the package after a literal `--`. apt reads
+  the last character of a package name as an instruction: `-` removes, `+`
+  installs and `^` installs every package of a task. An approved `AptInstall`
+  could therefore remove a package or install a whole task, and an approved
+  `AptRemove` could install one. The daemon and the helper now refuse a trailing
+  `-` or `^` on every apt action that takes a package, and a trailing `+` on
+  every one except `AptInstall`. `g++` and `libstdc++6` stay installable; remove
+  a package whose name ends in `+` by its architecture-qualified name, such as
+  `g++:amd64`. `validated_install_package` gates the rpm-ostree package actions
+  as well, and they refuse `^` now. When an operand is not an exact package
+  name, apt reads it as a regular expression and acts on every package it
+  matches, and no character class can refuse that while accepting `python3.12`.
+  The helper passes `-o APT::Cmd::Pattern-Only=1`, which makes apt resolve exact
+  names only. The option is undocumented in apt.conf(5), so
+  `tests/release/action-steps.test.sh` runs it against the real `apt-get` and
+  fails if a release stops honouring it. The helper asks `apt-cache` or
+  `dpkg-query` whether the operand names exactly one existing package. That check
+  makes `AptInstall` refuse a name that is only virtual, such as `awk`, and makes
+  `AptRemove`, `AptPurge`, `AptHold` and `AptUnhold` refuse a package dpkg has
+  no record of.
+
+- **The `rpm-ostree` sudoers grants no longer take arguments.** The `sysknife`
+  account held `/usr/bin/rpm-ostree <subcommand> *` grants for `install`,
+  `uninstall`, `override`, `rebase`, `kargs`, `cleanup`, `upgrade` and
+  `status`. A trailing `*` takes rpm-ostree's own options as readily as an
+  operand, so a holder of the account could change the next boot as root with
+  no preview, approval receipt or audit row. `InstallPackages`,
+  `AddLayeredPackage`, `RemovePackages`, `RemoveLayeredPackage`,
+  `ReplaceLayeredPackage`, `RemoveBasePackage`, `RebaseSystem` and
+  `SetKernelArguments` now go through a new `rpm-ostree` verb of
+  `/usr/lib/sysknife/action-steps`. The verb builds the rpm-ostree argv itself
+  and accepts no option. It validates each package with the daemon's rule,
+  which refuses a path, a URL and a local `.rpm`; screens each kernel argument
+  with the allowlist `grub-kargs-edit` applies; and refuses a rebase target
+  that reads from the host, such as a local repository or an `oci:` image
+  directory. `RebaseSystem` refuses those targets in the daemon too, and both
+  copies of every rule check `tests/data/rpm-ostree-parity.txt`.
+  `UpdateSystem`, `RollbackDeployment`, `CleanupDeployments` and
+  `ResetLayeredPackageOverride` keep exact grants. `rpm-ostree cancel`, which
+  the action-timeout reaper runs, gets an exact grant as well: it had none, so
+  sudo refused the reaper and a timed-out rpm-ostree transaction ran on.
+  `50-sysknife.rules` keeps only the rpm-ostree `upgrade` and `rollback`
+  polkit actions, the two the daemon calls without sudo; the others let the
+  `sysknife` account reach rpmostreed over D-Bus and skip the verb. A rebase
+  target now also refuses the `ostree-unverified-registry:` and
+  `ostree-unverified-image:` transports, which boot any image without a
+  signature check; rebase to an `ostree-image-signed:` image or a configured
+  ostree remote instead. (GHSA-32wv-3c2p-qp95)
+
 ## [0.27.0] — 2026-10-27
 
 ### Added

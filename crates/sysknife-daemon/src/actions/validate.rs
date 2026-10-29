@@ -193,7 +193,67 @@ pub(crate) const ROOT_SHELL_UNITS: &[&str] =
 /// risk is in bringing a unit up, not in reading or stopping it.
 pub fn validated_activatable_unit(s: &str, param: &'static str) -> Result<String, ExecutorError> {
     let unit = validated_unit_name(s, param)?;
-    if ROOT_SHELL_UNITS.contains(&bare_unit_name(&unit).as_str()) {
+    let bare = bare_unit_name(&unit);
+    if ROOT_SHELL_UNITS.contains(&bare.as_str()) || POWER_STATE_UNITS.contains(&bare.as_str()) {
+        return Err(ExecutorError::InvalidParam(param));
+    }
+    Ok(unit)
+}
+
+/// Units whose activation reboots, powers off, halts, kexecs, suspends or
+/// stops every service on the host.
+///
+/// `StartService` and `RestartService` are Medium, which maps to the Dev tier,
+/// and `RebootSystem` is High. Without this list `StartService reboot.target`
+/// gave a Dev caller the Admin outcome (GHSA-68v6-p23h-fwcf). The targets and
+/// the services behind them are both listed, because `systemd-reboot.service`
+/// reboots as surely as `reboot.target`. `runlevel0` and `runlevel6` are stock
+/// aliases of `poweroff` and `reboot`, the way `runlevel1` is of `rescue`.
+/// `shutdown` and `umount` stop or unmount everything that conflicts with them,
+/// which is nearly every unit. `exit` is what PID 1 treats as a power-off.
+///
+/// Name-based, so it shares the limit issue #144 records for
+/// [`ROOT_SHELL_UNITS`]: a site-local alias is spelled differently.
+pub(crate) const POWER_STATE_UNITS: &[&str] = &[
+    "reboot",
+    "soft-reboot",
+    "poweroff",
+    "halt",
+    "kexec",
+    "ctrl-alt-del",
+    "exit",
+    "runlevel0",
+    "runlevel6",
+    "shutdown",
+    "umount",
+    "sleep",
+    "suspend",
+    "hibernate",
+    "hybrid-sleep",
+    "suspend-then-hibernate",
+    "systemd-reboot",
+    "systemd-soft-reboot",
+    "systemd-poweroff",
+    "systemd-halt",
+    "systemd-kexec",
+    "systemd-exit",
+    "systemd-suspend",
+    "systemd-hibernate",
+    "systemd-hybrid-sleep",
+    "systemd-suspend-then-hibernate",
+];
+
+/// Validate a unit name that an action will **stop** or **restart** at Medium.
+///
+/// Layered on [`validated_unit_name`], plus a refusal of
+/// [`RESOURCE_LIMIT_PROTECTED_UNITS`] and its families. `StopService` validated
+/// by charset alone, so the Dev tier could stop `sysknife-daemon`, `auditd` or
+/// `ssh` while `MaskService` on the same units is High. Those are the units the
+/// resource-limit screen already protects, for the same reason: stopping one
+/// switches off the enforcement, the evidence, or the way back in.
+pub fn validated_stoppable_unit(s: &str, param: &'static str) -> Result<String, ExecutorError> {
+    let unit = validated_unit_name(s, param)?;
+    if is_protected_unit(&bare_unit_name(&unit)) {
         return Err(ExecutorError::InvalidParam(param));
     }
     Ok(unit)
@@ -316,15 +376,19 @@ pub fn validated_resource_limit_unit(
     if lower.ends_with(".slice") || lower.ends_with(".scope") {
         return Err(ExecutorError::InvalidParam(param));
     }
-    let bare = bare_unit_name(&unit);
-    if RESOURCE_LIMIT_PROTECTED_UNITS.contains(&bare.as_str())
-        || RESOURCE_LIMIT_PROTECTED_PREFIXES
-            .iter()
-            .any(|family| bare.starts_with(family))
-    {
+    if is_protected_unit(&bare_unit_name(&unit)) {
         return Err(ExecutorError::InvalidParam(param));
     }
     Ok(unit)
+}
+
+/// Whether a [`bare_unit_name`] is one of [`RESOURCE_LIMIT_PROTECTED_UNITS`] or
+/// belongs to one of [`RESOURCE_LIMIT_PROTECTED_PREFIXES`].
+fn is_protected_unit(bare: &str) -> bool {
+    RESOURCE_LIMIT_PROTECTED_UNITS.contains(&bare)
+        || RESOURCE_LIMIT_PROTECTED_PREFIXES
+            .iter()
+            .any(|family| bare.starts_with(family))
 }
 
 /// Validate a hostname per RFC 1123: `[a-zA-Z0-9.-]`, 1-253 chars, labels 1-63
@@ -590,6 +654,68 @@ pub fn validated_safe_arg(s: &str, param: &'static str) -> Result<String, Execut
         return Err(ExecutorError::InvalidParam(param));
     }
     Ok(s.to_string())
+}
+
+/// The containers-image transports that read an image from this host rather
+/// than from a registry. `packaging/sysknife-action-steps` holds the same list,
+/// and `tests/release/action-steps.test.sh` compares the two.
+pub const LOCAL_IMAGE_TRANSPORTS: &[&str] = &[
+    "oci",
+    "oci-archive",
+    "dir",
+    "docker-archive",
+    "docker-daemon",
+    "containers-storage",
+    "ostree",
+    "sif",
+    "tarball",
+    "file",
+];
+
+/// The ostree-container transports that skip signature verification. Through
+/// them a rebase boots any image the caller names, so a direct call to the
+/// helper would hand the sysknife account an arbitrary root filesystem.
+/// `ostree-image-signed:` and `ostree-remote-image:` verify against a policy the
+/// administrator configured, and a plain `remote:ref` uses an administrator's
+/// ostree remote. `packaging/sysknife-action-steps` holds the same list.
+pub const UNVERIFIED_IMAGE_TRANSPORTS: &[&str] =
+    &["ostree-unverified-registry", "ostree-unverified-image"];
+
+/// Validate the target of `RebaseSystem`: [`validated_safe_arg`], and no local
+/// source.
+///
+/// `rpm-ostree rebase` boots whatever the target names. An ostree
+/// `remote:ref` or a verified image (`ostree-image-signed:docker://...`) is
+/// fetched from a source the host already trusts. An unverified image
+/// ([`UNVERIFIED_IMAGE_TRANSPORTS`]) is any image at all. A target that reads from this host
+/// (`ostree-unverified-image:oci:/tmp/img`, a repository path) is an OS image
+/// whoever can write a file put there, and [`validated_safe_arg`] admits it.
+///
+/// Split on `:`, no part may be one of [`LOCAL_IMAGE_TRANSPORTS`] or
+/// [`UNVERIFIED_IMAGE_TRANSPORTS`] (any case),
+/// start with `.`, or start with `/` unless it is the `//` that follows
+/// `docker`. `..` and `@/` (the repository path of the `ostree` transport) are
+/// refused anywhere. `packaging/sysknife-action-steps` repeats this rule for its
+/// `rpm-ostree rebase` verb, and both read `tests/data/rpm-ostree-parity.txt`.
+pub fn validated_rebase_ref(s: &str, param: &'static str) -> Result<String, ExecutorError> {
+    let target = validated_safe_arg(s, param)?;
+    let mut previous = String::new();
+    for part in target.split(':') {
+        let lower = part.to_ascii_lowercase();
+        let local_path = part.starts_with('/') && !(previous == "docker" && part.starts_with("//"));
+        if LOCAL_IMAGE_TRANSPORTS.contains(&lower.as_str())
+            || UNVERIFIED_IMAGE_TRANSPORTS.contains(&lower.as_str())
+            || part.starts_with('.')
+            || local_path
+        {
+            return Err(ExecutorError::InvalidParam(param));
+        }
+        previous = lower;
+    }
+    if target.contains("..") || target.contains("@/") {
+        return Err(ExecutorError::InvalidParam(param));
+    }
+    Ok(target)
 }
 
 /// Validate an LVM volume-group / logical-volume / snapshot name.
@@ -1036,6 +1162,52 @@ pub fn validated_log_path(s: &str, param: &'static str) -> Result<String, Execut
     Ok(s.to_string())
 }
 
+/// The directories that hold the host's record of what happened. Mirrors
+/// `LOG_EVIDENCE_DIRS` in `packaging/sysknife-log-edit`.
+const LOG_EVIDENCE_DIRS: &[&str] = &["/var/log", "/var/log/audit", "/var/log/journal"];
+
+/// Whether a rotation target ends in a bare wildcard over the log evidence.
+///
+/// `ConfigureLogRotation` is Medium, so the Dev tier reaches it, and root's
+/// logrotate acts on what it writes. `/var/log/*`, `/var/log/audit/*` and
+/// `/var/log/journal/*` passed [`validated_log_path`] and name every file in
+/// the directories auditd and journald write to. A wildcard directory such as
+/// `/var/log/*/*` sweeps the audit and journal trees with it, so a bare final
+/// `*` under any wildcard component counts too. `//` and `.` components are
+/// dropped first so the same directory cannot be spelled past the list.
+fn log_glob_sweeps_evidence(path: &str) -> bool {
+    let parts: Vec<&str> = path
+        .split('/')
+        .filter(|p| !p.is_empty() && *p != ".")
+        .collect();
+    let Some((last, parent)) = parts.split_last() else {
+        return false;
+    };
+    if !last.chars().all(|c| c == '*') {
+        return false;
+    }
+    LOG_EVIDENCE_DIRS.contains(&format!("/{}", parent.join("/")).as_str())
+        || parent.iter().any(|p| p.contains('*'))
+}
+
+/// Validate a `ConfigureLogRotation` target and its rotate count together.
+///
+/// Refuses a bare wildcard over the log evidence (see
+/// [`log_glob_sweeps_evidence`]) on `path`, and `rotate 0` over any wildcard on
+/// `rotate`: logrotate deletes every rotated file a zero count leaves, and a
+/// glob decides how many files that is (GHSA-68v6-p23h-fwcf). Mirrors
+/// `op_logrotate` in `packaging/sysknife-log-edit`.
+pub fn validated_log_rotation(path: &str, rotate: u32) -> Result<String, ExecutorError> {
+    let path = validated_log_path(path, "path")?;
+    if log_glob_sweeps_evidence(&path) {
+        return Err(ExecutorError::InvalidParam("path"));
+    }
+    if path.contains('*') && rotate == 0 {
+        return Err(ExecutorError::InvalidParam("rotate"));
+    }
+    Ok(path)
+}
+
 /// Validate a syslog collector host: a hostname or IPv4/IPv6 literal
 /// (`[A-Za-z0-9.:_-]`, no `..`, 1..=255). Mirrors `HOST_RE` in the helper.
 pub fn validated_syslog_host(s: &str, param: &'static str) -> Result<String, ExecutorError> {
@@ -1065,13 +1237,33 @@ pub fn validated_syslog_host(s: &str, param: &'static str) -> Result<String, Exe
 /// - no leading `-` (option injection) or `.` (relative path),
 /// - no `.deb`/`.rpm` suffix (apt treats a bare `foo.deb` in the cwd as a file),
 /// - no `*`/`?` (an install is never a glob),
-/// - charset `[A-Za-z0-9+._:=~^-]`, which covers `name`, `name=version`,
-///   `name:arch`, and rpm epoch/version punctuation.
+/// - charset `[A-Za-z0-9+._:=~-]`, which covers `name`, `name=version`,
+///   `name:arch`, and rpm epoch/version punctuation. `^` is out: a trailing `^`
+///   is apt's task selector, so `ubuntu-desktop^` installs every package of the
+///   task, and no package name contains it,
+/// - no trailing `-`: apt-get reads `pkg-` on `install` as "remove pkg", so an
+///   approved `AptInstall` of `linux-image-generic-` removed the kernel
+///   metapackage. A trailing `+` stays legal here because `g++` and
+///   `libstdc++6` are real packages and `install pkg+` is an explicit install.
+///
+/// Remove, purge, hold and unhold take [`validated_unmodified_package`], which
+/// also refuses the trailing `+`. `packaging/sysknife-action-steps` repeats this
+/// rule for the `apt` verb, and both read `tests/data/apt-package-parity.txt`.
+///
+/// What no character class can refuse is a name that is also a regular
+/// expression. `.` and `+` are legal in names (`python3.12`, `g++`), and when an
+/// operand is not an exact package name apt-get falls back to a regular
+/// expression and acts on every package it matches, so `linux-image.+` passes
+/// every rule above. This function does not handle that case.
+/// `packaging/sysknife-action-steps` does: every apt-get and apt-mark argv it
+/// builds carries `-o APT::Cmd::Pattern-Only=1`, which makes apt resolve exact
+/// names only, and before it runs an operand verb it asks apt-cache or
+/// dpkg-query whether the operand names exactly one existing package.
 pub fn validated_install_package(s: &str, param: &'static str) -> Result<String, ExecutorError> {
     let first_ok = s.chars().next().is_some_and(|c| c.is_ascii_alphanumeric());
-    let charset_ok = s.chars().all(|c| {
-        c.is_ascii_alphanumeric() || matches!(c, '+' | '.' | '_' | ':' | '=' | '~' | '^' | '-')
-    });
+    let charset_ok = s
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '.' | '_' | ':' | '=' | '~' | '-'));
     if s.is_empty()
         || s.len() > MAX_APT_PACKAGE_LEN
         || !first_ok
@@ -1079,10 +1271,41 @@ pub fn validated_install_package(s: &str, param: &'static str) -> Result<String,
         || s.contains('/')
         || s.ends_with(".deb")
         || s.ends_with(".rpm")
+        || s.ends_with('-')
     {
         return Err(ExecutorError::InvalidParam(param));
     }
     Ok(s.to_string())
+}
+
+/// Validate a package operand for apt `remove`, `purge`, `hold` and `unhold`:
+/// everything [`validated_install_package`] requires, and no trailing `+` either.
+///
+/// apt-get reads `pkg+` on `remove` or `purge` as "install pkg", so an approved
+/// `AptRemove` installed the package it was previewed as removing. `apt-mark`
+/// strips the `+` and acts on the shorter name, so the previewed name is not the
+/// one held. A package whose real name ends in `+` (`g++`) is removed, held or
+/// unheld by its arch-qualified spelling (`g++:amd64`), which stays valid.
+pub fn validated_unmodified_package(s: &str, param: &'static str) -> Result<String, ExecutorError> {
+    let package = validated_install_package(s, param)?;
+    if package.ends_with('+') {
+        return Err(ExecutorError::InvalidParam(param));
+    }
+    Ok(package)
+}
+
+/// Validate the operand of `apt-cache show`: [`validated_safe_arg`], which keeps
+/// the `pkg/release` selector `show` accepts, and no trailing `-`.
+///
+/// `apt-cache show` does not invert anything (`show pkg-` answers "No packages
+/// found"). The refusal keeps one rule for every apt action that takes a
+/// package: none accepts a trailing `-`.
+pub fn validated_apt_show_package(s: &str, param: &'static str) -> Result<String, ExecutorError> {
+    let package = validated_safe_arg(s, param)?;
+    if package.ends_with('-') {
+        return Err(ExecutorError::InvalidParam(param));
+    }
+    Ok(package)
 }
 
 /// Validate an apt package-name glob (`[A-Za-z0-9.+*?_:-]`, 1..=128).
@@ -1285,6 +1508,29 @@ pub(crate) const SHELL_EQUIVALENT_COMMANDS: &[&str] = &[
     "mount",
 ];
 
+/// Packaging suffixes Debian and Ubuntu install interpreters under
+/// (`vim.basic`, `vim.tiny`). See [`unversioned_command_name`].
+///
+/// `packaging/sysknife-sudoers-edit` carries the same list, and
+/// `tests/release/sudoers-edit.test.sh` fails when the two differ.
+pub(crate) const SHELL_EQUIVALENT_SUFFIXES: &[&str] = &[".basic", ".tiny"];
+
+/// A command basename with its version removed: `python3.12` → `python`,
+/// `perl5.38.2` → `perl`, `vim.basic` → `vim`.
+///
+/// Ubuntu installs interpreters under versioned names, and an exact lookup in
+/// [`SHELL_EQUIVALENT_COMMANDS`] missed every one of them, so
+/// `NOPASSWD: /usr/bin/python3.12` passed as a narrow grant. Drops one packaging
+/// suffix, then every trailing digit and dot. The helper's
+/// `unversioned_command_name` does the same, character for character.
+fn unversioned_command_name(base: &str) -> &str {
+    let base = SHELL_EQUIVALENT_SUFFIXES
+        .iter()
+        .find_map(|suffix| base.strip_suffix(suffix))
+        .unwrap_or(base);
+    base.trim_end_matches(|c: char| c.is_ascii_digit() || c == '.')
+}
+
 /// The first command in a validated sudoers list that makes it equivalent to
 /// `ALL`, or `None` when every entry is narrower than that.
 ///
@@ -1302,6 +1548,7 @@ pub fn shell_equivalent_sudo_command(commands: &str) -> Option<String> {
         .find(|c| {
             let base = c.rsplit('/').next().unwrap_or(c).to_ascii_lowercase();
             SHELL_EQUIVALENT_COMMANDS.contains(&base.as_str())
+                || SHELL_EQUIVALENT_COMMANDS.contains(&unversioned_command_name(&base))
         })
         .map(str::to_string)
 }
@@ -1600,6 +1847,254 @@ mod tests {
                 validated_install_package(ok, "package").is_ok(),
                 "{ok:?} is a legitimate package spec and must be accepted"
             );
+        }
+    }
+
+    /// What apt-get does with the last character of an operand. A trailing `-` on
+    /// `install` is "remove this package", so an approved `AptInstall` of
+    /// `linux-image-generic-` removed the kernel metapackage while the preview
+    /// said "install". A trailing `+` on `remove` or `purge` is "install this
+    /// package", the same inversion the other way. Checked against apt 3.2.0
+    /// (`apt-get -s install have-me-` prints `Remv have-me`; `apt-get -s remove
+    /// avail-me+` prints `Inst avail-me`).
+    #[test]
+    fn install_package_refuses_a_trailing_minus() {
+        for evil in [
+            "linux-image-generic-",
+            "linux-generic-hwe-24.04-",
+            "nginx-",
+            "a-",
+            "nginx=1.0-",
+            "nginx:amd64-",
+        ] {
+            assert!(
+                validated_install_package(evil, "package").is_err(),
+                "{evil:?} would make apt-get install REMOVE a package and must be refused"
+            );
+        }
+    }
+
+    /// A trailing `^` is apt's task selector: `apt-get install ubuntu-desktop^`
+    /// installs every package of the task, so one approved `AptInstall` installs
+    /// dozens. No package name contains `^`, so the character is refused everywhere
+    /// in an operand, for every apt action that takes a package.
+    #[test]
+    fn apt_package_operands_refuse_the_task_selector() {
+        for evil in [
+            "ubuntu-desktop^",
+            "task-xfce^",
+            "nginx^",
+            "nginx^amd64",
+            "a^b",
+            "nginx=1.0^",
+        ] {
+            assert!(
+                validated_install_package(evil, "package").is_err(),
+                "{evil:?} installs a whole task and must be refused for install"
+            );
+            assert!(
+                validated_unmodified_package(evil, "package").is_err(),
+                "{evil:?} must be refused for remove, purge, hold and unhold"
+            );
+        }
+    }
+
+    #[test]
+    fn install_package_keeps_names_that_end_in_plus() {
+        // g++ and libstdc++6 are real packages, and `apt-get install pkg+` is an
+        // explicit install, so a trailing `+` stays legal on the install path.
+        for ok in [
+            "g++",
+            "libstdc++6",
+            "gcc-c++",
+            "libc++-dev",
+            "clang++",
+            "nginx+",
+        ] {
+            assert!(
+                validated_install_package(ok, "package").is_ok(),
+                "{ok:?} must stay installable"
+            );
+        }
+    }
+
+    #[test]
+    fn unmodified_package_refuses_either_trailing_modifier() {
+        for evil in [
+            "g++",
+            "clang++",
+            "nginx+",
+            "linux-image-generic+",
+            "nginx=1.0+",
+            "nginx-",
+            "linux-image-generic-",
+            "nginx=1.0-",
+        ] {
+            assert!(
+                validated_unmodified_package(evil, "package").is_err(),
+                "{evil:?} would let apt-get remove, purge, hold or unhold do the opposite \
+                 operation or act on a different name, and must be refused"
+            );
+        }
+    }
+
+    #[test]
+    fn unmodified_package_keeps_every_install_rule() {
+        for evil in [
+            "",
+            "-nginx",
+            "-oAPT::Update::Pre-Invoke::=/bin/sh",
+            "/tmp/x.deb",
+            "./x.deb",
+            "x.deb",
+            "x.rpm",
+            ".nginx",
+            "nginx/noble",
+            "ng*",
+            "ng inx",
+            "nginx\n",
+        ] {
+            assert!(
+                validated_unmodified_package(evil, "package").is_err(),
+                "{evil:?} must be refused"
+            );
+        }
+        for ok in [
+            "nginx",
+            "python3-pip",
+            "libstdc++6",
+            "nginx=1.24.0-1",
+            "nginx:amd64",
+            "g++:amd64",
+        ] {
+            assert!(
+                validated_unmodified_package(ok, "package").is_ok(),
+                "{ok:?} must stay accepted; `g++:amd64` is how a `+` package is removed"
+            );
+        }
+    }
+
+    #[test]
+    fn apt_package_length_limit_is_128_for_both_validators() {
+        let longest = "a".repeat(128);
+        let too_long = "a".repeat(129);
+        assert!(validated_install_package(&longest, "package").is_ok());
+        assert!(validated_unmodified_package(&longest, "package").is_ok());
+        assert!(validated_install_package(&too_long, "package").is_err());
+        assert!(validated_unmodified_package(&too_long, "package").is_err());
+    }
+
+    #[test]
+    fn show_package_refuses_a_trailing_minus_and_keeps_the_release_selector() {
+        assert!(validated_apt_show_package("nginx-", "package").is_err());
+        assert!(validated_apt_show_package("linux-image-generic-", "package").is_err());
+        // `apt-cache show` takes `pkg/release`, `pkg:arch` and a trailing `+`;
+        // none of them changes anything on the host.
+        for ok in ["nginx", "nginx/noble", "nginx:amd64", "g++", "libstdc++6"] {
+            assert!(
+                validated_apt_show_package(ok, "package").is_ok(),
+                "{ok:?} must stay readable"
+            );
+        }
+        assert!(validated_apt_show_package("-nginx", "package").is_err());
+        assert!(validated_apt_show_package("", "package").is_err());
+    }
+
+    /// `rpm-ostree rebase` boots whatever the target names. A target that reads
+    /// from this host (a repository path, `oci:/path`, `dir:/path`) is an OS image
+    /// the caller put on disk, which `validated_safe_arg` alone admits.
+    #[test]
+    fn rebase_ref_refuses_local_sources_and_keeps_remote_refs() {
+        for ok in [
+            "fedora/41/x86_64/silverblue",
+            "fedora:fedora/41/x86_64/silverblue",
+            "ostree-image-signed:docker://quay.io/fedora/fedora-silverblue:41",
+            "ostree-remote-registry:fedora:quay.io/fedora/fedora-silverblue:41",
+        ] {
+            assert!(
+                validated_rebase_ref(ok, "target_ref").is_ok(),
+                "{ok:?} is a remote target and must stay valid"
+            );
+        }
+        for bad in [
+            "/tmp/repo",
+            "./repo",
+            "../repo",
+            "fedora:../../tmp/x",
+            "x:/tmp/repo",
+            "file:///tmp/repo",
+            "ostree-unverified-image:oci:/tmp/img",
+            "ostree-unverified-image:OCI:/tmp/img",
+            "ostree-unverified-image:dir:/tmp/img",
+            "ostree-unverified-image:containers-storage:localhost/x",
+            "ostree-unverified-image:ostree:x@/tmp/repo",
+            "ostree-unverified-image:docker:/tmp/x",
+            "ostree-unverified-registry:quay.io/fedora/fedora-silverblue:41",
+            "Ostree-Unverified-Registry:quay.io/x:1",
+            "ostree-unverified-image:docker://quay.io/x:1",
+            "-b",
+            "--experimental",
+            "",
+        ] {
+            assert!(
+                validated_rebase_ref(bad, "target_ref").is_err(),
+                "{bad:?} must be refused"
+            );
+        }
+    }
+
+    /// The root-owned helper `packaging/sysknife-action-steps` validates the same
+    /// operand again, because it is reachable through sudo without the daemon.
+    /// Both copies read `tests/data/apt-package-parity.txt`; the helper's side is
+    /// `class AptVerb` in `tests/release/action-steps.test.sh`.
+    #[test]
+    fn apt_package_parity_corpus_agrees_with_the_daemon_validators() {
+        let corpus = include_str!("../../tests/data/apt-package-parity.txt");
+        let mut seen: std::collections::BTreeSet<(String, String)> = Default::default();
+        let mut checked = 0;
+        for (index, line) in corpus.lines().enumerate() {
+            let number = index + 1;
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+            let mut parts = line.splitn(3, ' ');
+            let (Some(verb), Some(verdict), Some(operand)) =
+                (parts.next(), parts.next(), parts.next())
+            else {
+                panic!("corpus line {number} is not `<verb> <ok|refuse> <operand>`: {line:?}");
+            };
+            let result = match verb {
+                "install" => validated_install_package(operand, "package"),
+                "remove" | "purge" | "hold" | "unhold" => {
+                    validated_unmodified_package(operand, "package")
+                }
+                other => panic!("corpus line {number}: unknown verb {other:?}"),
+            };
+            match verdict {
+                "ok" => assert!(
+                    result.is_ok(),
+                    "corpus line {number}: `{verb} {operand}` must be accepted"
+                ),
+                "refuse" => assert!(
+                    result.is_err(),
+                    "corpus line {number}: `{verb} {operand}` must be refused"
+                ),
+                other => panic!("corpus line {number}: unknown verdict {other:?}"),
+            }
+            seen.insert((verb.to_string(), verdict.to_string()));
+            checked += 1;
+        }
+        assert!(
+            checked >= 60,
+            "only {checked} corpus lines were checked; the corpus was truncated or not parsed"
+        );
+        for verb in ["install", "remove", "purge", "hold", "unhold"] {
+            for verdict in ["ok", "refuse"] {
+                assert!(
+                    seen.contains(&(verb.to_string(), verdict.to_string())),
+                    "the corpus has no `{verb} {verdict}` line, so that half is unchecked"
+                );
+            }
         }
     }
 

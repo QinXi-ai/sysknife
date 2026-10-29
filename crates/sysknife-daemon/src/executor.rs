@@ -7,16 +7,18 @@ use crate::actions::{
     validate::{
         shell_equivalent_sudo_command, validated_activatable_unit, validated_apparmor_profile,
         validated_apt_package, validated_apt_pin_expr, validated_apt_pin_name,
-        validated_audit_path, validated_audit_perms, validated_cpu_quota, validated_domain,
-        validated_email, validated_fstype, validated_group, validated_group_not_critical,
-        validated_home_dir, validated_hostname, validated_install_package, validated_journal_grep,
-        validated_journal_priority, validated_journal_time, validated_locale, validated_log_path,
+        validated_apt_show_package, validated_audit_path, validated_audit_perms,
+        validated_cpu_quota, validated_domain, validated_email, validated_fstype, validated_group,
+        validated_group_not_critical, validated_home_dir, validated_hostname,
+        validated_install_package, validated_journal_grep, validated_journal_priority,
+        validated_journal_time, validated_locale, validated_log_path, validated_log_rotation,
         validated_lvm_name, validated_lvm_size, validated_memory_limit, validated_mount_device,
         validated_mount_options, validated_mount_point, validated_port_or_service,
-        validated_ppa_name, validated_pro_service, validated_resource_limit_unit,
-        validated_safe_arg, validated_sudo_commands, validated_sudoers_name, validated_swap_path,
-        validated_sysctl_key, validated_sysctl_value, validated_syslog_host, validated_tasks_max,
-        validated_timezone, validated_unit_name, validated_username,
+        validated_ppa_name, validated_pro_service, validated_rebase_ref,
+        validated_resource_limit_unit, validated_safe_arg, validated_stoppable_unit,
+        validated_sudo_commands, validated_sudoers_name, validated_swap_path, validated_sysctl_key,
+        validated_sysctl_value, validated_syslog_host, validated_tasks_max, validated_timezone,
+        validated_unit_name, validated_unmodified_package, validated_username,
         validated_username_not_critical,
     },
     ActionMechanism, ActionSpec,
@@ -282,17 +284,17 @@ fn is_rpm_ostree_action(program: &str, args: &[String]) -> bool {
 }
 
 /// The argv for a privileged, non-interactive signal to a whole process group:
-/// `sudo -n /usr/bin/kill -s <SIGNAL> -- -<pgid>`. Run as root, it reaches the
-/// root children a `sudo` action forked that the unprivileged daemon cannot
-/// signal itself. `-n` never prompts (the sysknife sudoers entry is NOPASSWD),
-/// `--` ends options so the negative pgid is unambiguously a group, not a flag.
+/// `sudo -n /usr/lib/sysknife/action-steps signal <SIGNAL> -<pgid>`. Run as
+/// root, it reaches the root children a `sudo` action forked that the
+/// unprivileged daemon cannot signal itself. `-n` never prompts (the sysknife
+/// sudoers entry is NOPASSWD). The helper reads `-<pgid>` as a group and
+/// refuses -1, 0 and 1 for every caller, which a `kill -s *` grant could not.
 fn root_group_kill_argv(signal: &str, pgid: i32) -> Vec<String> {
     vec![
         "-n".to_string(),
-        "/usr/bin/kill".to_string(),
-        "-s".to_string(),
+        "/usr/lib/sysknife/action-steps".to_string(),
+        "signal".to_string(),
         signal.to_string(),
-        "--".to_string(),
         format!("-{pgid}"),
     ]
 }
@@ -392,7 +394,7 @@ const REAP_WAIT_CAP: Duration = Duration::from_secs(2);
 /// An unprivileged daemon cannot signal a process running as root, which every
 /// `sudo` action's real work does. When the group survives the daemon's own
 /// signals it therefore escalates to a privileged reaper ([`privileged_reap`]):
-/// a root kill of the group via the sudoers-authorised `/usr/bin/kill`, or an
+/// a root kill of the group via the sudoers-authorised `action-steps signal`, or an
 /// `rpm-ostree cancel` for a transaction that lives in another cgroup (#142).
 /// Only when even that cannot confirm the group gone does it return
 /// [`ExecutorError::ActionNotStopped`] — now a genuine last resort — and the
@@ -832,7 +834,7 @@ pub fn build_action_spec(action_name: &str, params: &Value) -> Result<ActionSpec
         "UnpinDeployment" => Ok(deployment::unpin_deployment(require_u32(params, "index")?)),
         "RebaseSystem" => {
             let target_ref = require_str(params, "target_ref")?;
-            let target_ref = validated_safe_arg(target_ref, "target_ref")?;
+            let target_ref = validated_rebase_ref(target_ref, "target_ref")?;
             Ok(deployment::rebase_system(&target_ref))
         }
         "SetKernelArguments" => {
@@ -1016,11 +1018,13 @@ pub fn build_action_spec(action_name: &str, params: &Value) -> Result<ActionSpec
             Ok(services::start_service(&unit))
         }
         "StopService" => {
-            let unit = validated_unit_name(require_str(params, "unit")?, "unit")?;
+            let unit = validated_stoppable_unit(require_str(params, "unit")?, "unit")?;
             Ok(services::stop_service(&unit))
         }
         "RestartService" => {
+            // A restart is a stop and a start, so it clears both screens.
             let unit = validated_activatable_unit(require_str(params, "unit")?, "unit")?;
+            let unit = validated_stoppable_unit(&unit, "unit")?;
             Ok(services::restart_service(&unit))
         }
         "SetServiceEnabled" => {
@@ -1398,7 +1402,6 @@ pub fn build_action_spec(action_name: &str, params: &Value) -> Result<ActionSpec
         }
         "ConfigureLogRotation" => {
             let name = validated_sudoers_name(require_str(params, "name")?, "name")?;
-            let path = validated_log_path(require_str(params, "path")?, "path")?;
             let frequency = require_str(params, "frequency")?;
             if !matches!(frequency, "daily" | "weekly" | "monthly") {
                 return Err(ExecutorError::InvalidParam("frequency"));
@@ -1407,6 +1410,7 @@ pub fn build_action_spec(action_name: &str, params: &Value) -> Result<ActionSpec
             if rotate > 1000 {
                 return Err(ExecutorError::InvalidParam("rotate"));
             }
+            let path = validated_log_rotation(require_str(params, "path")?, rotate)?;
             let compress = params
                 .get("compress")
                 .and_then(|v| v.as_bool())
@@ -1611,7 +1615,7 @@ pub fn build_action_spec(action_name: &str, params: &Value) -> Result<ActionSpec
             Ok(users::lock_user_account(&username))
         }
         "UnlockUserAccount" => {
-            let username = validated_username(resolve_username(params)?, "username")?;
+            let username = validated_username_not_critical(resolve_username(params)?, "username")?;
             Ok(users::unlock_user_account(&username))
         }
 
@@ -1658,20 +1662,20 @@ pub fn build_action_spec(action_name: &str, params: &Value) -> Result<ActionSpec
             Ok(apt::apt_install(&package))
         }
         "AptRemove" => {
-            let package = validated_install_package(require_str(params, "package")?, "package")?;
+            let package = validated_unmodified_package(require_str(params, "package")?, "package")?;
             Ok(apt::apt_remove(&package))
         }
         "AptPurge" => {
-            let package = validated_install_package(require_str(params, "package")?, "package")?;
+            let package = validated_unmodified_package(require_str(params, "package")?, "package")?;
             Ok(apt::apt_purge(&package))
         }
         "AptAutoremove" => Ok(apt::apt_autoremove()),
         "AptHold" => {
-            let package = validated_install_package(require_str(params, "package")?, "package")?;
+            let package = validated_unmodified_package(require_str(params, "package")?, "package")?;
             Ok(apt::apt_hold(&package))
         }
         "AptUnhold" => {
-            let package = validated_install_package(require_str(params, "package")?, "package")?;
+            let package = validated_unmodified_package(require_str(params, "package")?, "package")?;
             Ok(apt::apt_unhold(&package))
         }
         "AptSearch" => {
@@ -1680,7 +1684,7 @@ pub fn build_action_spec(action_name: &str, params: &Value) -> Result<ActionSpec
         }
         "AptListInstalled" => Ok(apt::apt_list_installed()),
         "AptShow" => {
-            let package = validated_safe_arg(require_str(params, "package")?, "package")?;
+            let package = validated_apt_show_package(require_str(params, "package")?, "package")?;
             Ok(apt::apt_show(&package))
         }
         "AptListUpgradable" => Ok(apt::apt_list_upgradable()),
@@ -2372,170 +2376,226 @@ fn str_array_or_empty(params: &Value, key: &'static str) -> Result<Vec<String>, 
     }
 }
 
-/// Reject kernel command-line arguments that could bypass security mechanisms
-/// or drop to an unauthenticated root shell on next boot. Applies only to
-/// arguments being *added* (`SetKernelArguments`'s `add`, `GrubSetKargs`'s
-/// `append`) — removing an existing argument is always safe.
+/// The kernel arguments `SetKernelArguments` and `GrubSetKargs` may add, in the
+/// normal form of [`normalized_kernel_arg`]. Anything not named is refused.
+/// Documentation/admin-guide/kernel-parameters.txt and kernel-command-line(7)
+/// describe each key.
 ///
-/// `param` names the request field being validated so the error points at the
-/// caller's actual parameter (`"add"` for `SetKernelArguments`, `"append"` for
-/// `GrubSetKargs`).
+/// An allowlist, because four review rounds of the denylists it replaced each
+/// found another spelling past them: a hyphen in the key (`spectre-v2=off`), a
+/// `kstrtobool` prefix (`mitigations=of`), a mitigation switch nobody had listed
+/// (`nopku`, `spectre_v2_user=off`). One list, three copies: this file,
+/// `packaging/sysknife-grub-kargs-edit` and `packaging/sysknife-action-steps`.
+/// `tests/release/grub-kargs-edit.test.sh` and
+/// `tests/release/action-steps.test.sh` compare them element by element.
 ///
-/// This is a *denylist* layered on top of the caller's charset validation —
-/// both callers run their charset check first. In particular `GrubSetKargs`
-/// runs [`validated_safe_arg`] (which already rejects `=` and `,`), so on that
-/// path the load-bearing checks here are the bare runlevel shortcuts
-/// (`single`/`s`/`1`).
-///
-/// Blocked (case-insensitive):
-///
-/// - `init=`           — replaces init, can give a root shell
-/// - `selinux=0`       — disables SELinux
-/// - `enforcing=0`     — sets SELinux to permissive
-/// - `security=`       — overrides LSM module selection
-/// - `apparmor=0`      — disables the AppArmor LSM (Ubuntu's default MAC)
-/// - `systemd.unit=emergency` / `systemd.unit=rescue` / `systemd.unit=single`
-///   — unprotected root shell
-/// - `single` / `1` / `s` — single-user mode (root without password)
-/// - `module_blacklist=` — can disable security-critical kernel modules
-/// - `mitigations=off` — disables CPU speculative-execution vulnerability
-///   mitigations (Spectre/Meltdown/MDS/etc.)
-/// - `lockdown=`       — weakens or disables the kernel lockdown LSM
-/// - `pti=off`         — disables Page Table Isolation (Meltdown mitigation)
-/// - `nosmap` / `nosmep` — disable SMAP/SMEP, CPU features that block a large
-///   class of kernel-exploitation techniques
-/// - `systemd.debug_shell` — the same root shell as `systemd.unit=debug-shell`,
-///   asked for by a different name
-fn validated_safe_kernel_arg(arg: &str, param: &'static str) -> Result<(), ExecutorError> {
-    const BLOCKED_PREFIXES: &[&str] = &[
-        "init=",
-        "selinux=0",
-        "enforcing=0",
-        "security=",
-        "module_blacklist=",
-        "apparmor=0",
-        "mitigations=off",
-        "lockdown=",
-        "pti=off",
-        // `systemd.unit=` is not the only way to ask for `debug-shell.service`.
-        // systemd-debug-generator also honours `systemd.debug_shell`, which
-        // pulls the unit into the boot transaction and spawns a root shell on
-        // tty9 before anyone logs in — the identical end state the
-        // `BLOCKED_UNIT_PREFIXES` screen below exists to prevent. Underscore is
-        // the real spelling per systemd-debug-generator(8); `rd.` is the
-        // initrd-honoured variant, and the hyphen forms are listed so a
-        // near-miss cannot creep back.
-        "systemd.debug_shell",
-        "systemd.debug-shell",
-        "rd.systemd.debug_shell",
-        "rd.systemd.debug-shell",
-    ];
-    const BLOCKED_EXACT: &[&str] = &["single", "s", "1", "nosmap", "nosmep"];
-    // Shared with `validated_activatable_unit`, deliberately: these two screens
-    // encode the same idea from opposite directions — one refuses to START a
-    // root-shell unit, the other refuses to BOOT into it — and keeping two lists
-    // let them drift until `debug-shell` and `runlevel1` were blocked on one path
-    // and reachable on the other.
-    use crate::actions::validate::ROOT_SHELL_UNITS as BLOCKED_UNIT_PREFIXES;
+/// Ordinary switches with no value; removable.
+const KARG_FLAGS: &[&str] = &[
+    "quiet",
+    "splash",
+    "rhgb",
+    "nomodeset",
+    "nowatchdog",
+    "threadirqs",
+];
 
+/// Hardening switches with no value: they may be added and never removed.
+const KARG_HARDENING_FLAGS: &[&str] = &["nosmt", "slab_nomerge"];
+
+/// Ordinary keys that take any value of the one-token character set; removable.
+const KARG_VALUE_KEYS: &[&str] = &[
+    "console",
+    "video",
+    "loglevel",
+    "hugepages",
+    "hugepagesz",
+    "default_hugepagesz",
+    "nvme_core.default_ps_max_latency_us",
+    "usbcore.autosuspend",
+    "nvidia_drm.modeset",
+    "nvidia_drm.fbdev",
+    "i915.enable_psr",
+    "amdgpu.dc",
+    "acpi_backlight",
+    "mem_sleep_default",
+    "pcie_aspm",
+    "transparent_hugepage",
+    "zswap.enabled",
+    "systemd.show_status",
+    "plymouth.enable",
+];
+
+/// Ordinary keys whose value is a comma-separated list, each element from the
+/// key's own set; removable. `rd.driver.blacklist=` keeps a driver from loading,
+/// so it takes GPU drivers only: `tpm_crb` or `dm_crypt` there would switch off a
+/// protection. `resume=` is not on the allowlist at all: at a device the caller
+/// controls it boots a crafted hibernation image.
+const KARG_LIST_VALUES: &[(&str, &[&str])] = &[(
+    "rd.driver.blacklist",
+    &[
+        "nouveau",
+        "nvidia",
+        "nvidia_drm",
+        "nvidia_modeset",
+        "radeon",
+        "amdgpu",
+        "i915",
+    ],
+)];
+
+/// Hardening keys with the only values that may be added. A hardening key is
+/// never removed, with or without a value: libostree's
+/// `ostree_kernel_args_delete` deletes a key's only value when asked for the bare
+/// key, so `--delete=lockdown` would drop `lockdown=confidentiality`.
+const KARG_HARDENING_VALUES: &[(&str, &[&str])] = &[
+    ("lockdown", &["integrity", "confidentiality"]),
+    ("module.sig_enforce", &["1"]),
+    ("intel_iommu", &["on"]),
+    ("amd_iommu", &["force_isolation"]),
+    ("init_on_alloc", &["1"]),
+    ("init_on_free", &["1"]),
+    ("page_alloc.shuffle", &["1"]),
+    ("randomize_kstack_offset", &["on"]),
+    ("mitigations", &["auto", "auto,nosmt"]),
+    ("pti", &["on"]),
+    ("vsyscall", &["none"]),
+    ("debugfs", &["off"]),
+];
+
+/// Exact downgrades, in normal form. Removing one hardens the host, so it is
+/// allowed although its key is not an ordinary one; none of them can be added.
+const KARG_WEAKENING: &[&str] = &[
+    "selinux=0",
+    "enforcing=0",
+    "apparmor=0",
+    "lockdown=none",
+    "debugfs=on",
+    "iommu=off",
+    "intel_iommu=off",
+    "nokaslr",
+    "nopti",
+    "nosmap",
+    "nosmep",
+    "nospectre_v1",
+    "nospectre_v2",
+    "nospec_store_bypass_disable",
+    "nospectre_bhb",
+    "single",
+    "emergency",
+    "rescue",
+    "rd.break",
+    "rd.shell",
+    "systemd.debug_shell",
+    "init=/bin/sh",
+    "init=/bin/bash",
+    "mitigations=off",
+    "pti=off",
+    "audit=0",
+    "module.sig_enforce=0",
+    "init_on_alloc=0",
+    "init_on_free=0",
+    "page_alloc.shuffle=0",
+    "randomize_kstack_offset=off",
+    "spectre_v2=off",
+    "spec_store_bypass_disable=off",
+    "mds=off",
+    "tsx_async_abort=off",
+    "mmio_stale_data=off",
+    "retbleed=off",
+    "srbds=off",
+    "l1tf=off",
+    "spectre_bhi=off",
+    "gather_data_sampling=off",
+    "reg_file_data_sampling=off",
+];
+
+/// The form both kernel-argument screens match on: lowercase, with `-` read as
+/// `_` in the key. The kernel's `parameq()` (kernel/params.c) and systemd's
+/// `proc_cmdline_key_streq()` treat the two as one character in a parameter
+/// name, so `spectre-v2=off` is `spectre_v2=off`. The value keeps its spelling.
+/// Every list entry above is written in this form.
+fn normalized_kernel_arg(arg: &str) -> String {
     let lower = arg.to_lowercase();
-    // Strip optional value (e.g. "quiet=1" → "quiet") for exact matches.
-    let base = lower.split('=').next().unwrap_or(&lower);
+    match lower.split_once('=') {
+        Some((key, value)) => format!("{}={value}", key.replace('-', "_")),
+        None => lower.replace('-', "_"),
+    }
+}
 
-    if BLOCKED_PREFIXES.iter().any(|p| lower.starts_with(p)) {
-        return Err(ExecutorError::InvalidParam(param));
-    }
-    if BLOCKED_EXACT.iter().any(|e| lower == *e) {
-        return Err(ExecutorError::InvalidParam(param));
-    }
-    // Block systemd.unit= pointing to emergency/rescue/single targets.
-    if let Some(unit_val) = lower.strip_prefix("systemd.unit=") {
-        if BLOCKED_UNIT_PREFIXES
-            .iter()
-            .any(|u| unit_val.starts_with(u))
-        {
-            return Err(ExecutorError::InvalidParam(param));
+/// Screen a kernel argument that is about to be **added** to the boot line
+/// (`SetKernelArguments`'s `add`, `GrubSetKargs`'s `append`): one boot-line
+/// token, and on the allowlist. A flag is accepted bare, an ordinary key with
+/// any non-empty value, a list key with every element in its set, a hardening
+/// key with one of its listed values. `param`
+/// names the request field in the error.
+fn validated_safe_kernel_arg(arg: &str, param: &'static str) -> Result<(), ExecutorError> {
+    validated_kernel_arg_token(arg, param)?;
+    let normal = normalized_kernel_arg(arg);
+    let allowed = match normal.split_once('=') {
+        None => {
+            KARG_FLAGS.contains(&normal.as_str()) || KARG_HARDENING_FLAGS.contains(&normal.as_str())
         }
+        Some((key, value)) => {
+            (!value.is_empty() && KARG_VALUE_KEYS.contains(&key))
+                || KARG_LIST_VALUES
+                    .iter()
+                    .any(|(k, allowed)| *k == key && value.split(',').all(|v| allowed.contains(&v)))
+                || KARG_HARDENING_VALUES
+                    .iter()
+                    .any(|(k, values)| *k == key && values.contains(&value))
+        }
+    };
+    if allowed {
+        Ok(())
+    } else {
+        Err(ExecutorError::InvalidParam(param))
     }
-    // Guard against the base arg matching dangerous exact values even with =.
-    if BLOCKED_EXACT.contains(&base) {
+}
+
+/// Require `arg` to be exactly one token of the kernel command line.
+///
+/// Both kargs screens judge one key and one value. The boot line is split on
+/// whitespace, so a value carrying a second token behind a space, tab or newline
+/// (or a quote that groups one) would land that token on the boot line
+/// unscreened: `console=tty0 init=/bin/sh` is a listed key with a value. The
+/// character set is `validated_safe_arg`'s plus `=` and `,`, which real
+/// arguments need (`console=ttyS0,115200`), and the leading `-` stays refused.
+fn validated_kernel_arg_token(arg: &str, param: &'static str) -> Result<(), ExecutorError> {
+    if arg.is_empty() || arg.len() > crate::actions::validate::SAFE_ARG_MAX_BYTES {
+        return Err(ExecutorError::InvalidParam(param));
+    }
+    if arg.starts_with('-') {
+        return Err(ExecutorError::InvalidParam(param));
+    }
+    if !arg.chars().all(|c| {
+        c.is_ascii_alphanumeric()
+            || matches!(c, '.' | '_' | ':' | '/' | '+' | '@' | '-' | '=' | ',')
+    }) {
         return Err(ExecutorError::InvalidParam(param));
     }
     Ok(())
 }
 
-/// Validate a kernel argument that is about to be **removed** from the boot line.
+/// Screen a kernel argument that is about to be **removed** from the boot line.
 ///
-/// [`validated_safe_kernel_arg`] screens additions. Removal was left unscreened
-/// on the premise that "removing a dangerous arg is always safe", which inverts
-/// the risk: the dangerous move is removing a *protective* arg. Deleting
-/// `module.sig_enforce=1` or `lockdown=confidentiality` reaches the same end
-/// state as adding its weakening counterpart, which the add-path refuses — so
-/// leaving `remove` open handed back every guarantee the add-path buys.
-///
-/// The prefixes below are the KSPP-recommended boot parameters plus the LSM
-/// selectors; each is a protection the host loses the moment the token leaves
-/// the boot line. `WEAKENING` is the escape hatch that keeps the screen from
-/// collapsing into "no removals at all": an argument that is itself a downgrade
-/// must stay removable, or SysKnife could never harden a host that already boots
-/// with `mitigations=off`.
+/// Removing a protective argument reaches the same next boot as adding its
+/// weakening counterpart, so removal is allowed only for an ordinary key of the
+/// allowlist (bare or with a value), or for an exact downgrade in
+/// [`KARG_WEAKENING`], whose removal hardens the host. A hardening key and any
+/// key nobody listed are refused, bare or with a value.
 fn validated_safe_kernel_arg_removal(arg: &str, param: &'static str) -> Result<(), ExecutorError> {
-    /// Removing one of these hardens the host, so removal stays allowed even
-    /// though the token matches a protective prefix below.
-    const WEAKENING: &[&str] = &[
-        "selinux=0",
-        "enforcing=0",
-        "apparmor=0",
-        "mitigations=off",
-        "pti=off",
-        "lockdown=none",
-        "debugfs=on",
-        "iommu=off",
-        "intel_iommu=off",
-        "module.sig_enforce=0",
-        "init_on_alloc=0",
-        "init_on_free=0",
-        "randomize_kstack_offset=off",
-        "page_alloc.shuffle=0",
-    ];
-    const PROTECTIVE_PREFIXES: &[&str] = &[
-        "lockdown=",
-        "module.sig_enforce=",
-        "security=",
-        "selinux=",
-        "enforcing=",
-        "apparmor=",
-        "pti=",
-        "mitigations=",
-        "init_on_alloc=",
-        "init_on_free=",
-        "page_alloc.shuffle=",
-        "randomize_kstack_offset=",
-        "slub_debug=",
-        "page_poison=",
-        "vsyscall=",
-        "debugfs=",
-        "iommu=",
-        "intel_iommu=",
-        "amd_iommu=",
-    ];
-    const PROTECTIVE_EXACT: &[&str] = &["slab_nomerge", "nosmt", "kaslr"];
-
-    let lower = arg.to_lowercase();
-    if WEAKENING.contains(&lower.as_str()) {
-        return Ok(());
-    }
-    // Protective wins over the add-path inversion below. `security=` is refused
-    // by BOTH screens: adding it picks an LSM, removing it drops the one in use.
-    if PROTECTIVE_PREFIXES.iter().any(|p| lower.starts_with(p))
-        || PROTECTIVE_EXACT.contains(&lower.as_str())
+    validated_kernel_arg_token(arg, param)?;
+    let normal = normalized_kernel_arg(arg);
+    let key = normal.split('=').next().unwrap_or(&normal);
+    if KARG_WEAKENING.contains(&normal.as_str())
+        || KARG_FLAGS.contains(&key)
+        || KARG_VALUE_KEYS.contains(&key)
+        || KARG_LIST_VALUES.iter().any(|(k, _)| *k == key)
     {
-        return Err(ExecutorError::InvalidParam(param));
+        Ok(())
+    } else {
+        Err(ExecutorError::InvalidParam(param))
     }
-    // Everything else — ordinary boot arguments, and the add-path's own denylist
-    // (`init=`, a bare `single`, an emergency `systemd.unit=`, all weakenings the
-    // host is better off without) — stays removable.
-    Ok(())
 }
 
 /// Validate a `kill` signal against a strict allowlist, returning the canonical
@@ -2994,6 +3054,73 @@ mod tests {
         );
     }
 
+    /// The root-owned helper `packaging/sysknife-action-steps` validates every
+    /// rpm-ostree operand again, because it is reachable through sudo without the
+    /// daemon. Both copies read `tests/data/rpm-ostree-parity.txt`; the helper's
+    /// side is `class RpmOstreeVerb` in `tests/release/action-steps.test.sh`.
+    #[test]
+    fn rpm_ostree_parity_corpus_agrees_with_the_daemon_validators() {
+        let corpus = include_str!("../tests/data/rpm-ostree-parity.txt");
+        let mut seen: std::collections::BTreeSet<(String, String)> = Default::default();
+        let mut checked = 0;
+        for (index, line) in corpus.lines().enumerate() {
+            let number = index + 1;
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+            let mut parts = line.splitn(3, ' ');
+            let (Some(kind), Some(verdict), Some(operand)) =
+                (parts.next(), parts.next(), parts.next())
+            else {
+                panic!("corpus line {number} is not `<kind> <ok|refuse> <operand>`: {line:?}");
+            };
+            let accepted = match kind {
+                "package" => validated_install_package(operand, "package").is_ok(),
+                "ref" => validated_rebase_ref(operand, "target_ref").is_ok(),
+                "append" => validated_safe_kernel_arg(operand, "add").is_ok(),
+                "delete" => validated_safe_kernel_arg_removal(operand, "remove").is_ok(),
+                other => panic!("corpus line {number}: unknown kind {other:?}"),
+            };
+            match verdict {
+                "ok" => assert!(
+                    accepted,
+                    "corpus line {number}: `{kind} {operand}` must be accepted"
+                ),
+                "refuse" => assert!(
+                    !accepted,
+                    "corpus line {number}: `{kind} {operand}` must be refused"
+                ),
+                other => panic!("corpus line {number}: unknown verdict {other:?}"),
+            }
+            seen.insert((kind.to_string(), verdict.to_string()));
+            checked += 1;
+        }
+        assert!(
+            checked >= 60,
+            "only {checked} corpus lines were checked; the corpus was truncated or not parsed"
+        );
+        for kind in ["package", "ref", "append", "delete"] {
+            for verdict in ["ok", "refuse"] {
+                assert!(
+                    seen.contains(&(kind.to_string(), verdict.to_string())),
+                    "the corpus has no `{kind} {verdict}` line, so that half is unchecked"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn rebase_system_refuses_a_local_source() {
+        for target_ref in ["/tmp/repo", "ostree-unverified-image:oci:/tmp/img"] {
+            let err = build_action_spec("RebaseSystem", &json!({ "target_ref": target_ref }))
+                .unwrap_err();
+            assert!(
+                matches!(err, ExecutorError::InvalidParam("target_ref")),
+                "{target_ref:?}: expected InvalidParam(target_ref), got: {err}"
+            );
+        }
+    }
+
     #[test]
     fn build_spec_rebase_system_injects_target_ref() {
         let spec = build_action_spec(
@@ -3006,6 +3133,7 @@ mod tests {
             ActionMechanism::Command {
                 program: "sudo",
                 args: vec![
+                    "/usr/lib/sysknife/action-steps".to_string(),
                     "rpm-ostree".to_string(),
                     "rebase".to_string(),
                     "fedora/41/x86_64/silverblue".to_string(),
@@ -3026,10 +3154,13 @@ mod tests {
             ActionMechanism::Command {
                 program: "sudo",
                 args: vec![
+                    "/usr/lib/sysknife/action-steps".to_string(),
                     "rpm-ostree".to_string(),
                     "kargs".to_string(),
-                    "--append=nomodeset".to_string(),
-                    "--delete=quiet".to_string(),
+                    "append".to_string(),
+                    "nomodeset".to_string(),
+                    "delete".to_string(),
+                    "quiet".to_string(),
                 ],
             }
         );
@@ -3043,7 +3174,11 @@ mod tests {
             spec.mechanism,
             ActionMechanism::Command {
                 program: "sudo",
-                args: vec!["rpm-ostree".to_string(), "kargs".to_string()],
+                args: vec![
+                    "/usr/lib/sysknife/action-steps".to_string(),
+                    "rpm-ostree".to_string(),
+                    "kargs".to_string(),
+                ],
             }
         );
     }
@@ -3055,7 +3190,11 @@ mod tests {
             spec.mechanism,
             ActionMechanism::Command {
                 program: "sudo",
-                args: vec!["rpm-ostree".to_string(), "kargs".to_string()],
+                args: vec![
+                    "/usr/lib/sysknife/action-steps".to_string(),
+                    "rpm-ostree".to_string(),
+                    "kargs".to_string(),
+                ],
             }
         );
     }
@@ -3087,6 +3226,20 @@ mod tests {
             matches!(err, ExecutorError::InvalidParam("username")),
             "expected InvalidParam(username), got: {err}"
         );
+    }
+
+    /// The helper behind UnlockUserAccount refuses critical accounts, as the
+    /// lock path always has: unlocking a root account an administrator locked
+    /// on purpose is the same decision made in reverse.
+    #[test]
+    fn unlock_user_account_rejects_critical_account() {
+        let err =
+            build_action_spec("UnlockUserAccount", &json!({ "username": "root" })).unwrap_err();
+        assert!(
+            matches!(err, ExecutorError::InvalidParam("username")),
+            "expected InvalidParam(username), got: {err}"
+        );
+        assert!(build_action_spec("UnlockUserAccount", &json!({ "username": "alice" })).is_ok());
     }
 
     #[test]
@@ -3293,17 +3446,63 @@ mod tests {
         );
     }
 
+    /// The operand-taking rpm-ostree actions moved behind `action-steps
+    /// rpm-ostree`, and the transaction still runs in rpm-ostreed's cgroup, so a
+    /// timed-out one must still be cancelled rather than group-killed.
+    /// tests/sudoers_grants_match_argv.rs checks a grant admits the cancel argv.
+    #[test]
+    fn reap_command_still_cancels_an_rpm_ostree_action_behind_the_helper() {
+        for name in [
+            "AddLayeredPackage",
+            "InstallPackages",
+            "RemovePackages",
+            "RemoveLayeredPackage",
+            "ReplaceLayeredPackage",
+            "RemoveBasePackage",
+            "RebaseSystem",
+            "SetKernelArguments",
+        ] {
+            let params = match name {
+                "InstallPackages" | "RemovePackages" => json!({"packages": ["vim"]}),
+                "ReplaceLayeredPackage" => json!({"old": "vim", "new": "nano"}),
+                "RebaseSystem" => json!({"target_ref": "fedora:fedora/41/x86_64/silverblue"}),
+                "SetKernelArguments" => json!({"add": ["quiet"]}),
+                _ => json!({"package": "vim"}),
+            };
+            let spec = build_action_spec(name, &params).unwrap();
+            let ActionMechanism::Command { program, args } = &spec.mechanism else {
+                panic!("{name} is not a command");
+            };
+            assert_eq!(
+                args[0], "/usr/lib/sysknife/action-steps",
+                "{name}: {args:?}"
+            );
+            assert_eq!(
+                reap_command(99, program, args),
+                vec!["-n", "/usr/bin/rpm-ostree", "cancel"],
+                "{name} would be group-killed while its transaction runs on"
+            );
+        }
+    }
+
     #[test]
     fn root_group_kill_argv_targets_the_whole_group_non_interactively() {
-        // sudo -n /usr/bin/kill -s KILL -- -<pgid>: non-interactive (NOPASSWD),
-        // options terminated so the negative pgid is a group, not a flag.
+        // sudo -n action-steps signal KILL -<pgid>: non-interactive
+        // (NOPASSWD). tests/sudoers_grants_match_argv.rs holds REAPER_ARGV,
+        // the same argv, and fails if no grant admits it.
         assert_eq!(
             root_group_kill_argv("KILL", 4242),
-            vec!["-n", "/usr/bin/kill", "-s", "KILL", "--", "-4242"]
+            vec![
+                "-n",
+                "/usr/lib/sysknife/action-steps",
+                "signal",
+                "KILL",
+                "-4242"
+            ]
         );
         assert_eq!(
             root_group_kill_argv("TERM", 7)[3..].to_vec(),
-            vec!["TERM", "--", "-7"]
+            vec!["TERM", "-7"]
         );
     }
 
@@ -3668,6 +3867,63 @@ mod tests {
         }
     }
 
+    /// apt-get reads the last character of an operand: `pkg-` on `install` removes
+    /// the package, `pkg+` on `remove` or `purge` installs it, and `pkg^` installs a
+    /// task. The validators refuse all three; only this proves every apt arm
+    /// actually calls the right one, so an arm that goes back to the install
+    /// validator fails here.
+    #[test]
+    fn apt_package_actions_refuse_a_trailing_modifier() {
+        let reject: &[(&str, &str)] = &[
+            ("AptInstall", "linux-image-generic-"),
+            ("AptInstall", "nginx-"),
+            ("AptRemove", "nginx-"),
+            ("AptRemove", "nginx+"),
+            ("AptRemove", "g++"),
+            ("AptPurge", "nginx-"),
+            ("AptPurge", "linux-image-generic+"),
+            ("AptHold", "nginx-"),
+            ("AptHold", "nginx+"),
+            ("AptUnhold", "nginx-"),
+            ("AptUnhold", "nginx+"),
+            ("AptShow", "nginx-"),
+            // A trailing `^` installs every package of a task.
+            ("AptInstall", "ubuntu-desktop^"),
+            ("AptRemove", "ubuntu-desktop^"),
+            ("AptPurge", "ubuntu-desktop^"),
+            ("AptHold", "ubuntu-desktop^"),
+            ("AptUnhold", "ubuntu-desktop^"),
+            ("AptShow", "ubuntu-desktop^"),
+        ];
+        for (action, package) in reject {
+            let result = build_action_spec(action, &json!({ "package": package }));
+            assert!(
+                matches!(result, Err(ExecutorError::InvalidParam("package"))),
+                "{action} {package:?} must be refused, got {result:?}"
+            );
+        }
+        // Positive twins, so the table above cannot pass for a validator that
+        // refuses everything. `g++` and `libstdc++6` must stay installable.
+        let accept: &[(&str, &str)] = &[
+            ("AptInstall", "g++"),
+            ("AptInstall", "libstdc++6"),
+            ("AptInstall", "nginx+"),
+            ("AptRemove", "libstdc++6"),
+            ("AptRemove", "g++:amd64"),
+            ("AptPurge", "g++:amd64"),
+            ("AptHold", "libstdc++6"),
+            ("AptUnhold", "libstdc++6"),
+            ("AptShow", "g++"),
+            ("AptShow", "nginx/noble"),
+        ];
+        for (action, package) in accept {
+            assert!(
+                build_action_spec(action, &json!({ "package": package })).is_ok(),
+                "{action} {package:?} must be accepted"
+            );
+        }
+    }
+
     /// The activation verbs must refuse a root-shell unit through the reachable
     /// action, and `SetServiceEnabled` must gate only on `enabled: true`. Mutation
     /// testing showed reverting these call sites to the loose validator passed the
@@ -3968,6 +4224,419 @@ mod tests {
         }
     }
 
+    /// The screens accept a fixed list of keys. Four review rounds of the
+    /// denylist this replaced each found another spelling past it (a hyphen in
+    /// the key, a `kstrtobool` prefix such as `of`, a mitigation switch nobody
+    /// had listed), so anything not named is refused, with an error that names
+    /// the parameter.
+    #[test]
+    fn kernel_arg_add_accepts_only_the_allowlist() {
+        for arg in [
+            "quiet",
+            "splash",
+            "rhgb",
+            "nomodeset",
+            "nowatchdog",
+            "threadirqs",
+            "nosmt",
+            "slab_nomerge",
+            "console=ttyS0,115200",
+            "rd.driver.blacklist=nouveau",
+            "transparent_hugepage=madvise",
+            "nvidia-drm.modeset=1",
+            "lockdown=integrity",
+            "lockdown=confidentiality",
+            "module.sig_enforce=1",
+            "intel_iommu=on",
+            "amd_iommu=force_isolation",
+            "init_on_alloc=1",
+            "init_on_free=1",
+            "page_alloc.shuffle=1",
+            "randomize_kstack_offset=on",
+            "mitigations=auto",
+            "mitigations=auto,nosmt",
+            "pti=on",
+            "vsyscall=none",
+            "debugfs=off",
+            "QUIET",
+        ] {
+            assert!(
+                validated_safe_kernel_arg(arg, "add").is_ok(),
+                "{arg} is on the allowlist and must be accepted"
+            );
+        }
+        for arg in [
+            // The review rounds' bypass spellings.
+            "spectre-v2=off",
+            "audit=off",
+            "systemd.wants=debug-shell.service",
+            "lsm=landlock",
+            "mitigations=of",
+            "nopku",
+            "spectre_v2_user=off",
+            "kpti=0",
+            "its=off",
+            "tsa=off",
+            "vmscape=off",
+            "noibrs",
+            "noibpb",
+            "audit=f",
+            // Unknown keys, a flag given a value, an empty value, a value off the list.
+            "foo=bar",
+            "foo",
+            "root=/dev/sdb1",
+            "quiet=1",
+            "console=",
+            "lockdown=none",
+            "mitigations=off",
+            "mitigations=auto,nosmt,foo",
+            "module.sig_enforce=0",
+            "debugfs=on",
+        ] {
+            assert!(
+                matches!(
+                    validated_safe_kernel_arg(arg, "add"),
+                    Err(ExecutorError::InvalidParam("add"))
+                ),
+                "{arg} is not on the allowlist and must be refused, naming `add`"
+            );
+        }
+    }
+
+    /// `resume=` at a device the caller controls boots a crafted hibernation
+    /// image, so it is not on the list (this test's `resume=/dev/mapper/luks-swap`
+    /// used to be accepted as an ordinary token). `rd.driver.blacklist=` takes
+    /// only GPU drivers, each comma-separated value from its own set, so
+    /// `tpm_crb` or `dm_crypt` cannot be kept from loading.
+    #[test]
+    fn kernel_arg_add_refuses_resume_and_limits_the_driver_blacklist() {
+        for arg in [
+            "resume=/dev/sdb1",
+            "resume=/dev/mapper/luks-swap",
+            "resume_offset=1",
+            "rd.driver.blacklist=tpm_crb",
+            "rd.driver.blacklist=nouveau,dm_crypt",
+            "rd.driver.blacklist=",
+            "rd.driver.blacklist=nouveau,",
+        ] {
+            assert!(
+                matches!(
+                    validated_safe_kernel_arg(arg, "add"),
+                    Err(ExecutorError::InvalidParam("add"))
+                ),
+                "{arg} must be refused"
+            );
+        }
+        for arg in [
+            "rd.driver.blacklist=nouveau",
+            "rd.driver.blacklist=nouveau,nvidia,nvidia_drm,nvidia_modeset",
+            "rd.driver.blacklist=radeon,amdgpu,i915",
+        ] {
+            assert!(
+                validated_safe_kernel_arg(arg, "add").is_ok(),
+                "{arg} must be accepted"
+            );
+        }
+        for arg in ["resume", "resume=/dev/mapper/luks-swap", "resume_offset"] {
+            assert!(
+                validated_safe_kernel_arg_removal(arg, "remove").is_err(),
+                "{arg} is not on the allowlist, so removing it is refused"
+            );
+        }
+        assert!(validated_safe_kernel_arg_removal("rd.driver.blacklist=nouveau", "remove").is_ok());
+    }
+
+    /// Removal is allowed for the ordinary keys of the allowlist and for the
+    /// exact downgrades in KARG_WEAKENING, and refused for a hardening key
+    /// (bare or with a value) and for any key nobody listed.
+    #[test]
+    fn kernel_arg_remove_accepts_only_ordinary_keys_and_known_downgrades() {
+        for arg in [
+            "quiet",
+            "rhgb",
+            "quiet=1",
+            "console=ttyS0",
+            "rd.driver.blacklist=nouveau",
+            "mitigations=off",
+            "init=/bin/sh",
+            "single",
+            "nokaslr",
+            "spectre_v2=off",
+        ] {
+            assert!(
+                validated_safe_kernel_arg_removal(arg, "remove").is_ok(),
+                "{arg} must stay removable"
+            );
+        }
+        for arg in [
+            "lockdown",
+            "module.sig_enforce",
+            "lockdown=integrity",
+            "nosmt",
+            "slab_nomerge",
+            "vsyscall=none",
+            "mitigations=auto",
+            "foo=bar",
+            "foo",
+            "mitigations=of",
+        ] {
+            assert!(
+                matches!(
+                    validated_safe_kernel_arg_removal(arg, "remove"),
+                    Err(ExecutorError::InvalidParam("remove"))
+                ),
+                "removing {arg} must be refused, naming `remove`"
+            );
+        }
+    }
+
+    /// The kernel's `parameq()` (kernel/params.c) and systemd's
+    /// `proc_cmdline_key_streq()` treat `-` and `_` as equal in a parameter
+    /// name, so a hyphen spelling reaches the same switch an underscore-only
+    /// list refuses. The value is not normalised: unit names keep their hyphens.
+    #[test]
+    fn kernel_arg_screens_treat_dash_and_underscore_alike_in_the_key() {
+        for arg in [
+            "spectre-v2=off",
+            "module-blacklist=apparmor",
+            "Spec-Store-Bypass-Disable=off",
+            "systemd.debug-shell=1",
+            "rd.systemd.debug-shell",
+            "nospectre-v2",
+            "nospectre-bhb",
+            "tsx-async-abort=off",
+        ] {
+            assert!(
+                validated_safe_kernel_arg(arg, "add").is_err(),
+                "{arg} is an underscore switch spelled with hyphens and must be refused"
+            );
+        }
+        for arg in [
+            "module.sig-enforce=1",
+            "init-on-alloc=1",
+            "randomize-kstack-offset=on",
+            "page-alloc.shuffle=1",
+        ] {
+            assert!(
+                validated_safe_kernel_arg_removal(arg, "remove").is_err(),
+                "{arg} is a protection spelled with hyphens and must not be removable"
+            );
+        }
+        for arg in ["init-on-alloc=0", "module.sig-enforce=0"] {
+            assert!(
+                validated_safe_kernel_arg_removal(arg, "remove").is_ok(),
+                "{arg} is a weakening spelled with hyphens and must stay removable"
+            );
+        }
+        assert!(validated_safe_kernel_arg("systemd.unit=debug-shell.service", "add").is_err());
+        // A listed key spelled with hyphens is the same key.
+        assert!(validated_safe_kernel_arg("nvidia-drm.modeset=1", "add").is_ok());
+    }
+
+    /// Where the kernel reads a switch as a boolean or as `off`, every spelling
+    /// of "off" turns it off, not only the one a list happened to name.
+    #[test]
+    fn kernel_arg_blocks_every_spelling_of_off_for_a_protection_switch() {
+        for arg in [
+            "audit=off",
+            "audit=0",
+            "audit=n",
+            "audit=no",
+            "audit=false",
+            "AUDIT=OFF",
+            "mitigations=false",
+            "pti=no",
+            "spectre_v2=n",
+            "mds=off",
+            "tsx_async_abort=off",
+            "mmio_stale_data=off",
+            "retbleed=off",
+            "srbds=off",
+            "l1tf=off",
+            "spectre_bhi=off",
+            "gather_data_sampling=off",
+            "reg_file_data_sampling=off",
+            "module.sig_enforce=no",
+            "init_on_free=false",
+            "nospec_store_bypass_disable",
+            "nospectre_bhb",
+        ] {
+            assert!(
+                matches!(
+                    validated_safe_kernel_arg(arg, "add"),
+                    Err(ExecutorError::InvalidParam("add"))
+                ),
+                "{arg} switches a protection off and must be refused"
+            );
+        }
+        for arg in [
+            "audit=1",
+            "mds=full",
+            "retbleed=auto",
+            "l1tf=flush",
+            "spectre_bhi=on",
+        ] {
+            assert!(
+                validated_safe_kernel_arg(arg, "add").is_err(),
+                "{arg} is not on the allowlist"
+            );
+        }
+        for arg in ["mitigations=auto", "pti=on"] {
+            assert!(
+                validated_safe_kernel_arg(arg, "add").is_ok(),
+                "{arg} must stay valid"
+            );
+        }
+    }
+
+    /// The mitigation switches the add screen now refuses turning off are
+    /// protections on the remove side, and their off spellings stay removable.
+    #[test]
+    fn kernel_arg_removal_protects_the_mitigation_switches() {
+        for arg in [
+            "mds=full",
+            "tsx_async_abort=full",
+            "mmio_stale_data=full",
+            "retbleed=auto",
+            "srbds=on",
+            "l1tf=flush",
+            "spectre_bhi=on",
+            "gather_data_sampling=force",
+            "reg_file_data_sampling=on",
+            "spectre_v2=on",
+            "spec_store_bypass_disable=on",
+            "mds",
+        ] {
+            assert!(
+                validated_safe_kernel_arg_removal(arg, "remove").is_err(),
+                "removing {arg} weakens the next boot and must be refused"
+            );
+        }
+        for arg in ["mds=off", "retbleed=off", "spectre_v2=off"] {
+            assert!(
+                validated_safe_kernel_arg_removal(arg, "remove").is_ok(),
+                "{arg} is a weakening, so removing it must stay allowed"
+            );
+        }
+        // Only the exact spellings in KARG_WEAKENING are known downgrades.
+        for arg in ["audit=false", "pti=no"] {
+            assert!(
+                validated_safe_kernel_arg_removal(arg, "remove").is_err(),
+                "{arg} is not in KARG_WEAKENING"
+            );
+        }
+    }
+
+    /// libostree deletes a key's only value when asked for the bare key
+    /// (`ostree_kernel_args_delete`, "for input arg with a single key ... the
+    /// key/value pair will be deleted if there is only one value"), so
+    /// `--delete=lockdown` removes `lockdown=confidentiality`. The prefix screen
+    /// `lockdown=` never matched the bare `lockdown`.
+    #[test]
+    fn kernel_arg_removal_refuses_a_protective_bare_key() {
+        for arg in [
+            "lockdown",
+            "module.sig_enforce",
+            "selinux",
+            "enforcing",
+            "apparmor",
+            "security",
+            "iommu",
+            "mitigations",
+            "init_on_alloc",
+            "lsm",
+            "audit",
+            "LOCKDOWN",
+            "kaslr=1",
+        ] {
+            assert!(
+                matches!(
+                    validated_safe_kernel_arg_removal(arg, "remove"),
+                    Err(ExecutorError::InvalidParam("remove"))
+                ),
+                "removing the bare key {arg} removes its protective value and must be refused"
+            );
+        }
+        // The full weakening token stays removable, and so does an ordinary key.
+        for arg in ["mitigations=off", "selinux=0", "audit=0", "quiet", "rhgb"] {
+            assert!(
+                validated_safe_kernel_arg_removal(arg, "remove").is_ok(),
+                "{arg} must stay removable"
+            );
+        }
+    }
+
+    /// `lsm=` picks the LSM stack as `security=` does, and `audit=1` is what
+    /// turns kernel auditing on, so dropping either weakens the next boot.
+    #[test]
+    fn kernel_arg_removal_refuses_the_lsm_and_audit_selectors() {
+        for arg in ["lsm=landlock,lockdown,yama,apparmor", "audit=1", "Audit=1"] {
+            assert!(
+                validated_safe_kernel_arg_removal(arg, "remove").is_err(),
+                "removing {arg} weakens the boot and must be refused"
+            );
+        }
+    }
+
+    /// `systemd.wants=` pulls a unit into the boot transaction as surely as
+    /// `systemd.unit=` makes it the target: `systemd.wants=debug-shell.service`
+    /// is the same root shell on tty9.
+    #[test]
+    fn kernel_arg_blocks_root_shell_units_pulled_in_by_wants() {
+        for arg in [
+            "systemd.wants=debug-shell.service",
+            "systemd.wants=emergency.service",
+            "rd.systemd.wants=rescue.target",
+            "rd.systemd.wants=debug-shell.service",
+            "SYSTEMD.WANTS=Debug-Shell.service",
+        ] {
+            assert!(
+                validated_safe_kernel_arg(arg, "add").is_err(),
+                "{arg} boots into a root shell and must be refused"
+            );
+        }
+        // The allowlist names no `systemd.wants=`, whatever the unit.
+        assert!(validated_safe_kernel_arg("systemd.wants=sshd.service", "add").is_err());
+    }
+
+    /// Weakenings the add screen missed: twins of arguments it already refused
+    /// (`lsm=` for `security=`, `modprobe.blacklist=` for `module_blacklist=`), the
+    /// initramfs shell, masking a unit at boot, and the per-mitigation switches.
+    #[test]
+    fn kernel_arg_blocks_the_remaining_weakenings() {
+        for arg in [
+            "lsm=landlock",
+            "rd.shell",
+            "rd.shell=1",
+            "systemd.mask=auditd.service",
+            "rd.systemd.mask=systemd-journald.service",
+            "modprobe.blacklist=apparmor",
+            "audit=0",
+            "nopti",
+            "nospectre_v1",
+            "nospectre_v2",
+            "spectre_v2=off",
+            "spec_store_bypass_disable=off",
+            "nokaslr",
+            "NOPTI",
+        ] {
+            assert!(
+                matches!(
+                    validated_safe_kernel_arg(arg, "add"),
+                    Err(ExecutorError::InvalidParam("add"))
+                ),
+                "{arg} weakens the next boot and must be refused"
+            );
+        }
+        for arg in ["spectre_v2=on", "audit=1"] {
+            assert!(
+                validated_safe_kernel_arg(arg, "add").is_err(),
+                "{arg} is not on the allowlist"
+            );
+        }
+        assert!(validated_safe_kernel_arg("quiet", "add").is_ok());
+    }
+
     /// The screen must not turn into "no removals at all" — an argument that is
     /// itself a weakening (the add-path refuses it) has to stay removable, or
     /// SysKnife could never undo `mitigations=off` on a host that already has it.
@@ -4007,6 +4676,78 @@ mod tests {
         }
     }
 
+    // A kernel argument is one token of the boot line. The denylists above read
+    // the start of the value, so a value that carries a second token behind a
+    // space, a tab or a newline would reach the boot line with that token
+    // unscreened. NUL and other control bytes have no place in a boot argument.
+    const NOT_ONE_KERNEL_TOKEN: &[&str] = &[
+        "quiet init=/bin/sh",
+        "x selinux=0",
+        "quiet\tmitigations=off",
+        "quiet\ninit=/bin/sh",
+        "quiet\rsingle",
+        "\u{0}nomodeset",
+        "nomodeset\u{0}",
+        "quiet\u{7f}",
+        "quiet\u{a0}single",
+        "console=\"ttyS0 init=/bin/sh\"",
+        "quiet'",
+        "quiet\\",
+        "-b",
+        "-quiet",
+        "",
+    ];
+
+    #[test]
+    fn set_kernel_arguments_refuses_a_value_that_is_not_one_token() {
+        for arg in NOT_ONE_KERNEL_TOKEN {
+            for key in ["add", "remove"] {
+                assert!(
+                    build_action_spec("SetKernelArguments", &json!({ key: [arg] })).is_err(),
+                    "SetKernelArguments must refuse {key} {arg:?}"
+                );
+            }
+        }
+        let too_long = "a".repeat(crate::actions::validate::SAFE_ARG_MAX_BYTES + 1);
+        for key in ["add", "remove"] {
+            assert!(
+                build_action_spec("SetKernelArguments", &json!({ key: [too_long] })).is_err(),
+                "SetKernelArguments must refuse an over-long {key} value"
+            );
+        }
+    }
+
+    #[test]
+    fn set_kernel_arguments_keeps_ordinary_tokens() {
+        for arg in [
+            "quiet",
+            "nomodeset",
+            "console=ttyS0,115200",
+            "rd.driver.blacklist=nouveau",
+            "video=HDMI-A-1:1920x1080@60",
+            "nvidia-drm.modeset=1",
+        ] {
+            for key in ["add", "remove"] {
+                assert!(
+                    build_action_spec("SetKernelArguments", &json!({ key: [arg] })).is_ok(),
+                    "SetKernelArguments must keep accepting {key} {arg:?}"
+                );
+            }
+        }
+        // `root=` picks the root filesystem the next boot mounts; it is not on
+        // the allowlist, so neither list takes it.
+        for key in ["add", "remove"] {
+            assert!(
+                build_action_spec(
+                    "SetKernelArguments",
+                    &json!({ key: ["root=UUID=0b1c-77aa"] })
+                )
+                .is_err(),
+                "SetKernelArguments must refuse {key} root="
+            );
+        }
+    }
+
     #[test]
     fn kernel_arg_blocks_systemd_unit_emergency_rescue() {
         assert!(matches!(
@@ -4021,6 +4762,57 @@ mod tests {
             validated_safe_kernel_arg("systemd.unit=single.target", "add"),
             Err(ExecutorError::InvalidParam("add"))
         ));
+    }
+
+    /// Boot-mode and run tokens that systemd(1) and kernel-command-line(7)
+    /// honour. `emergency`, `rescue`, `-b` and runlevels 2-5 pick the boot target
+    /// as `single` and `1` do; `systemd.run=` runs a command as a root service
+    /// after boot; `rdinit=` and `rd.systemd.unit=` are the initramfs twins of
+    /// `init=` and `systemd.unit=`; `rd.break` and `break` stop in an initramfs
+    /// root shell. tests/release/grub-kargs-edit.test.sh holds the helper to the
+    /// same list.
+    #[test]
+    fn kernel_arg_blocks_boot_mode_and_run_tokens() {
+        for arg in [
+            "emergency",
+            "rescue",
+            "-b",
+            "rd.emergency",
+            "rd.rescue",
+            "2",
+            "3",
+            "4",
+            "5",
+            "systemd.run=/tmp/x",
+            "systemd.run_success_action=reboot",
+            "systemd.run_failure_action=none",
+            "rdinit=/bin/sh",
+            "rd.break",
+            "rd.break=pre-mount",
+            "break",
+            "break=premount",
+            "rd.systemd.unit=emergency.target",
+            "rd.systemd.unit=rescue.target",
+            "rd.systemd.unit=debug-shell.service",
+            "EMERGENCY",
+            "Systemd.Run=/tmp/x",
+        ] {
+            assert!(
+                matches!(
+                    validated_safe_kernel_arg(arg, "add"),
+                    Err(ExecutorError::InvalidParam("add"))
+                ),
+                "{arg} boots into a root shell or runs a root command and must be refused"
+            );
+        }
+        // The allowlist names no systemd unit selector, whatever the unit.
+        assert!(validated_safe_kernel_arg("rd.systemd.unit=graphical.target", "add").is_err());
+        for arg in ["quiet", "splash", "loglevel=3"] {
+            assert!(
+                validated_safe_kernel_arg(arg, "add").is_ok(),
+                "{arg} carries no boot-security meaning and must stay appendable"
+            );
+        }
     }
 
     #[test]
@@ -4118,8 +4910,8 @@ mod tests {
             ActionMechanism::Command {
                 program: "sudo",
                 args: vec![
-                    "kill".to_string(),
-                    "-s".to_string(),
+                    "/usr/lib/sysknife/action-steps".to_string(),
+                    "signal".to_string(),
                     "KILL".to_string(),
                     "4242".to_string()
                 ],
@@ -4128,7 +4920,10 @@ mod tests {
         // Default signal is TERM when omitted.
         let spec = build_action_spec("SignalProcess", &json!({ "pid": 4242 })).unwrap();
         if let ActionMechanism::Command { args, .. } = spec.mechanism {
-            assert_eq!(args, vec!["kill", "-s", "TERM", "4242"]);
+            assert_eq!(
+                args,
+                vec!["/usr/lib/sysknife/action-steps", "signal", "TERM", "4242"]
+            );
         } else {
             panic!("expected Command mechanism");
         }
@@ -4256,11 +5051,11 @@ mod tests {
     fn grub_set_kargs_append_blocks_single_user_shortcut() {
         // Regression: GrubSetKargs previously used only the charset validator,
         // which accepts the bare `single`/`s`/`1` runlevel shortcuts. The
-        // kernel-arg denylist must apply to `append` too — booting into a
+        // kernel-arg allowlist must apply to `append` too — booting into a
         // single-user root shell is exactly the SetKernelArguments threat.
-        // Every BLOCKED_EXACT entry is valueless, so it passes the charset
-        // check and this denylist call is the only thing stopping it — the
-        // call is load-bearing here, not redundant with `validated_safe_arg`.
+        // These tokens are valueless, so they pass the charset check and the
+        // allowlist is the only thing stopping them — the call is load-bearing
+        // here, not redundant with `validated_safe_arg`.
         for dangerous in ["single", "s", "1", "nosmap", "nosmep"] {
             let err = build_action_spec(
                 "GrubSetKargs",
@@ -4269,7 +5064,7 @@ mod tests {
             .unwrap_err();
             assert!(
                 matches!(err, ExecutorError::InvalidParam("append")),
-                "GrubSetKargs must reject append=[{dangerous:?}] via the denylist, got {err:?}"
+                "GrubSetKargs must reject append=[{dangerous:?}] via the allowlist, got {err:?}"
             );
         }
         // A benign flag still builds successfully.
@@ -4282,11 +5077,10 @@ mod tests {
 
     #[test]
     fn kernel_arg_build_spec_rejects_dangerous_arg() {
-        // End-to-end: build_action_spec must propagate the blocklist error.
+        // End-to-end: build_action_spec must propagate the allowlist error.
         // This action does NOT apply the `validated_safe_arg` charset check,
-        // so `init=/bin/bash` reaches `validated_safe_kernel_arg` and is
-        // caught by BLOCKED_PREFIXES — the `=`-bearing half of that denylist
-        // is live here even though GrubSetKargs never reaches it.
+        // so `init=/bin/bash` reaches `validated_safe_kernel_arg`, whose
+        // `key=value` half is live here even though GrubSetKargs never reaches it.
         let err = build_action_spec(
             "SetKernelArguments",
             &json!({ "add": ["init=/bin/bash"], "remove": [] }),

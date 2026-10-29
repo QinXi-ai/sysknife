@@ -16,25 +16,25 @@ Every row is derived from the live code: the command from each action's `ActionS
 | `UpdateSystem` | `sudo rpm-ostree upgrade` | High | Fedora | ✓ | ✓ | download and stage the latest OSTree update (does not reboot) |
 | `PinDeployment` | `sudo ostree admin pin 0` | High | Fedora | – | – | pin a deployment so it is not GC'd — param: index (u32, deployment index from ListDeployments) |
 | `UnpinDeployment` | `sudo ostree admin pin --unpin 0` | High | Fedora | – | – | unpin a previously pinned deployment — param: index (u32) |
-| `RebaseSystem` | `sudo rpm-ostree rebase fedora/41/x86_64/silverblue` | High | Fedora | ✓ | ✓ | switch to a different OSTree ref/remote — param: target_ref (string, e.g. fedora/40/x86_64/silverblue) |
+| `RebaseSystem` | `sudo /usr/lib/sysknife/action-steps rpm-ostree rebase fedora/41/x86_64/silverblue` | High | Fedora | ✓ | ✓ | switch to a different OSTree ref/remote — param: target_ref (string, e.g. fedora/40/x86_64/silverblue) |
 | `CleanupDeployments` | `sudo rpm-ostree cleanup --rollback --pending` | High | Fedora | – | – | remove old staged deployments to free disk space |
 | `RebootSystem` | `sudo systemctl reboot` | High | All | ✓ | – | reboot the machine into the current or staged deployment |
 | `RollbackDeployment` | `sudo rpm-ostree rollback` | High | Fedora | ✓ | – | roll back to the previous booted deployment |
 | `GetKernelArguments` | `rpm-ostree kargs` | Low | Fedora | – | – | list current kernel command-line arguments (kargs) |
-| `SetKernelArguments` | `sudo rpm-ostree kargs` | High | Fedora | ✓ | ✓ | add/remove kernel command-line args — params: add (string\[\]), remove (string\[\]) — either may be \[\]; both lists are screened: no weakening arg may be added, and no protective one (lockdown=, module.sig_enforce=1, pti=on, mitigations=, selinux=1, slab_nomerge, …) removed |
+| `SetKernelArguments` | `sudo /usr/lib/sysknife/action-steps rpm-ostree kargs` | High | Fedora | ✓ | ✓ | add/remove kernel command-line args from a fixed list — params: add (string\[\]), remove (string\[\]) — either may be \[\]; add accepts only the flags quiet, splash, rhgb, nomodeset, nowatchdog, threadirqs, nosmt, slab_nomerge; any value for console, video, loglevel, hugepages, hugepagesz, default_hugepagesz, nvme_core.default_ps_max_latency_us, usbcore.autosuspend, nvidia_drm.modeset, nvidia_drm.fbdev, i915.enable_psr, amdgpu.dc, acpi_backlight, mem_sleep_default, pcie_aspm, transparent_hugepage, zswap.enabled, systemd.show_status, plymouth.enable; rd.driver.blacklist with GPU drivers only (nouveau, nvidia, nvidia_drm, nvidia_modeset, radeon, amdgpu, i915, comma-separated); and only the hardening values lockdown=integrity\|confidentiality, module.sig_enforce=1, intel_iommu=on, amd_iommu=force_isolation, init_on_alloc=1, init_on_free=1, page_alloc.shuffle=1, randomize_kstack_offset=on, mitigations=auto\|auto,nosmt, pti=on, vsyscall=none, debugfs=off; remove accepts the non-hardening keys above and known downgrades such as mitigations=off; anything else is refused |
 
 ## Package layering (rpm-ostree)
 
 | Action | Command | Risk | Distro | Rb | Ro | Description |
 |---|---|---|---|---|---|---|
-| `InstallPackages` | `sudo rpm-ostree install --idempotent podman` | High | Fedora | ✓ | ✓ | layer multiple RPM packages — param: packages\* (string\[\]) |
-| `RemovePackages` | `sudo rpm-ostree uninstall podman` | High | Fedora | ✓ | ✓ | remove layered RPM packages — param: packages\* (string\[\]) |
+| `InstallPackages` | `sudo /usr/lib/sysknife/action-steps rpm-ostree install podman` | High | Fedora | ✓ | ✓ | layer multiple RPM packages — param: packages\* (string\[\]) |
+| `RemovePackages` | `sudo /usr/lib/sysknife/action-steps rpm-ostree uninstall podman` | High | Fedora | ✓ | ✓ | remove layered RPM packages — param: packages\* (string\[\]) |
 | `GetLayeredPackages` | `rpm-ostree status --json` | Low | Fedora | – | – | list RPM packages layered on top of the base OS image — no params |
-| `AddLayeredPackage` | `sudo rpm-ostree install --idempotent podman` | High | Fedora | ✓ | ✓ | layer a single RPM package (requires reboot) — param: package\* (string) |
-| `RemoveLayeredPackage` | `sudo rpm-ostree uninstall podman` | High | Fedora | ✓ | ✓ | remove a single layered RPM package (requires reboot) — param: package\* (string) |
-| `ReplaceLayeredPackage` | `sudo rpm-ostree install neovim --uninstall vim` | High | Fedora | ✓ | ✓ | replace one layered package with another — params: old\* (string), new\* (string) |
+| `AddLayeredPackage` | `sudo /usr/lib/sysknife/action-steps rpm-ostree install podman` | High | Fedora | ✓ | ✓ | layer a single RPM package (requires reboot) — param: package\* (string) |
+| `RemoveLayeredPackage` | `sudo /usr/lib/sysknife/action-steps rpm-ostree uninstall podman` | High | Fedora | ✓ | ✓ | remove a single layered RPM package (requires reboot) — param: package\* (string) |
+| `ReplaceLayeredPackage` | `sudo /usr/lib/sysknife/action-steps rpm-ostree replace vim neovim` | High | Fedora | ✓ | ✓ | replace one layered package with another — params: old\* (string), new\* (string) |
 | `ResetLayeredPackageOverride` | `sudo rpm-ostree override reset --all` | High | Fedora | ✓ | ✓ | reset all rpm-ostree override changes — no params |
-| `RemoveBasePackage` | `sudo rpm-ostree override remove gedit` | High | Fedora | ✓ | ✓ | exclude a base OS package from the deployment — param: package\* (string) |
+| `RemoveBasePackage` | `sudo /usr/lib/sysknife/action-steps rpm-ostree override-remove gedit` | High | Fedora | ✓ | ✓ | exclude a base OS package from the deployment — param: package\* (string) |
 | `GetPendingUpdates` | `rpm-ostree upgrade --check` | Low | Fedora | – | – | check for a staged update and show its diff — no params |
 
 ## Filesystem
@@ -94,7 +94,7 @@ Every row is derived from the live code: the command from each action's `ActionS
 | Action | Command | Risk | Distro | Rb | Ro | Description |
 |---|---|---|---|---|---|---|
 | `ListProcesses` | `ps aux --sort=-%mem` | Low | All | – | – | list running processes with CPU and memory usage — no params |
-| `SignalProcess` | `sudo kill -s TERM 1234` | High | All | – | – | send a signal to a process to stop it — params: pid\* (integer &gt; 1); signal (TERM\|KILL\|HUP\|INT, default TERM) |
+| `SignalProcess` | `sudo /usr/lib/sysknife/action-steps signal TERM 1234` | High | All | – | – | send a signal to a process to stop it — params: pid\* (integer &gt; 1); signal (TERM\|KILL\|HUP\|INT, default TERM) |
 
 ## Journald
 
@@ -108,9 +108,9 @@ Every row is derived from the live code: the command from each action's `ActionS
 | Action | Command | Risk | Distro | Rb | Ro | Description |
 |---|---|---|---|---|---|---|
 | `GetLvmReport` | `lvs --reportformat json --units b -o lv_name,vg_name,lv_size,lv_attr,origin,data_percent` | Low | All | – | – | list logical volumes with VG, size, attributes, and usage as JSON (lvs) — no params; read-only |
-| `ExtendLogicalVolume` | `sudo lvextend -L +10G -r ubuntu-vg/ubuntu-lv` | High | All | – | – | grow a logical volume AND its filesystem in one step (lvextend -r) — params: vg\*, lv\*, size\* (e.g. '+10G' to add, or '50G' absolute); High risk |
-| `CreateLogicalVolume` | `sudo lvcreate -L 20G -n data ubuntu-vg` | Medium | All | – | – | create a new logical volume in a volume group (lvcreate) — params: vg\*, name\*, size\* (e.g. '20G'); Medium risk |
-| `CreateLvSnapshot` | `sudo lvcreate -s -L 5G -n ubuntu-lv-snap ubuntu-vg/ubuntu-lv` | Medium | All | – | – | snapshot a logical volume before risky changes (lvcreate -s) — params: vg\*, origin\* (LV to snapshot), snapshot\* (new name), size\* (copy-on-write reserve, e.g. '5G'); Medium risk |
+| `ExtendLogicalVolume` | `sudo /usr/lib/sysknife/action-steps lv-extend ubuntu-vg ubuntu-lv +10G` | High | All | – | – | grow a logical volume AND its filesystem in one step (lvextend -r) — params: vg\*, lv\*, size\* (e.g. '+10G' to add, or '50G' absolute); High risk |
+| `CreateLogicalVolume` | `sudo /usr/lib/sysknife/action-steps lv-create ubuntu-vg data 20G` | Medium | All | – | – | create a new logical volume in a volume group (lvcreate) — params: vg\*, name\*, size\* (e.g. '20G'); Medium risk |
+| `CreateLvSnapshot` | `sudo /usr/lib/sysknife/action-steps lv-snapshot ubuntu-vg ubuntu-lv ubuntu-lv-snap 5G` | Medium | All | – | – | snapshot a logical volume before risky changes (lvcreate -s) — params: vg\*, origin\* (LV to snapshot), snapshot\* (new name), size\* (copy-on-write reserve, e.g. '5G'); Medium risk |
 
 ## Kernel parameters — sysctl
 
@@ -144,7 +144,7 @@ Every row is derived from the live code: the command from each action's `ActionS
 | Action | Command | Risk | Distro | Rb | Ro | Description |
 |---|---|---|---|---|---|---|
 | `GetPasswordAging` | `chage -l alice` | Low | All | – | – | show a user's password-aging fields (chage -l) — param: user\*; read-only |
-| `SetPasswordAging` | `sudo chage -M 90 alice` | High | All | – | – | set a user's password aging (chage) — params: user\*, plus at least one of max_days/min_days/warn_days (0-99999); High risk |
+| `SetPasswordAging` | `sudo /usr/lib/sysknife/action-steps password-aging alice -M 90` | High | All | – | – | set a user's password aging (chage) — params: user\*, plus at least one of max_days/min_days/warn_days (0-99999); High risk |
 | `SetPasswordPolicy` | `sudo /usr/lib/sysknife/pam-edit --op pwquality --minlen 12` | High | All | – | – | set password-quality rules via pwquality — params: at least one of minlen (1-128), dcredit/ucredit/lcredit/ocredit (-64..64); High risk — needs libpam-pwquality enabled in the PAM stack to take effect |
 | `SetAccountLockout` | `sudo /usr/lib/sysknife/pam-edit --op faillock --deny 5` | High | All | – | – | configure account lockout via faillock — params: at least one of deny (1-1000), unlock_time/fail_interval (seconds, 0-604800); High risk — needs pam_faillock enabled in the PAM stack to take effect |
 
@@ -209,11 +209,11 @@ Every row is derived from the live code: the command from each action's `ActionS
 | `ListUsers` | `getent passwd` | Low | All | – | – | list all local user accounts — no params |
 | `ListGroups` | `getent group` | Low | All | – | – | list all local groups — no params |
 | `CreateUser` | `sudo /usr/lib/sysknife/action-steps user-create alice --home-dir /home/alice --shell /bin/bash` | High | All | – | – | create a local user account — param: username\*; optional: shell, home |
-| `DeleteUser` | `sudo userdel alice` | High | All | – | – | delete a local user account — param: username\* |
+| `DeleteUser` | `sudo /usr/lib/sysknife/action-steps user-delete alice` | High | All | – | – | delete a local user account — param: username\* |
 | `AddUserToGroup` | `sudo /usr/lib/sysknife/action-steps group-add alice wheel` | High | All | – | – | add a user to a group — params: username\*, group\* |
 | `RemoveUserFromGroup` | `sudo /usr/lib/sysknife/action-steps group-remove alice wheel` | High | All | – | – | remove a user from a group — params: username\*, group\* |
-| `CreateGroup` | `sudo groupadd developers` | Medium | All | – | – | create a local group — param: group\*; optional: system (bool → system GID range) |
-| `DeleteGroup` | `sudo groupdel developers` | High | All | – | – | delete a local group — param: group\*; irreversible |
+| `CreateGroup` | `sudo /usr/lib/sysknife/action-steps group-create developers` | Medium | All | – | – | create a local group — param: group\*; optional: system (bool → system GID range) |
+| `DeleteGroup` | `sudo /usr/lib/sysknife/action-steps group-delete developers` | High | All | – | – | delete a local group — param: group\*; irreversible |
 | `LockUserAccount` | `sudo /usr/lib/sysknife/action-steps user-lock alice` | High | All | – | – | disable password login for a user without deleting it — param: username\* |
 | `UnlockUserAccount` | `sudo /usr/lib/sysknife/action-steps user-unlock alice` | High | All | – | – | re-enable password login for a locked user — param: username\* |
 
@@ -265,8 +265,8 @@ Every row is derived from the live code: the command from each action's `ActionS
 | Action | Command | Risk | Distro | Rb | Ro | Description |
 |---|---|---|---|---|---|---|
 | `AppArmorStatus` | `sudo aa-status` | Low | Ubuntu | – | – | show status of all loaded AppArmor profiles (aa-status) — no params; read-only |
-| `AppArmorEnforce` | `sudo aa-enforce /etc/apparmor.d/usr.bin.firefox` | High | Ubuntu | – | – | put an AppArmor profile into enforce mode (aa-enforce) — param: profile_path\* (e.g. /etc/apparmor.d/usr.bin.firefox); High risk |
-| `AppArmorComplain` | `sudo aa-complain /etc/apparmor.d/usr.bin.firefox` | High | Ubuntu | – | – | put an AppArmor profile into complain/learning mode (aa-complain) — param: profile_path\*; High risk (disables MAC enforcement for the profile) |
+| `AppArmorEnforce` | `sudo aa-enforce -- /etc/apparmor.d/usr.bin.firefox` | High | Ubuntu | – | – | put an AppArmor profile into enforce mode (aa-enforce) — param: profile_path\* (e.g. /etc/apparmor.d/usr.bin.firefox); High risk |
+| `AppArmorComplain` | `sudo aa-complain -- /etc/apparmor.d/usr.bin.firefox` | High | Ubuntu | – | – | put an AppArmor profile into complain/learning mode (aa-complain) — param: profile_path\*; High risk (disables MAC enforcement for the profile) |
 
 ## cloud-init
 
@@ -287,14 +287,14 @@ Every row is derived from the live code: the command from each action's `ActionS
 
 | Action | Command | Risk | Distro | Rb | Ro | Description |
 |---|---|---|---|---|---|---|
-| `AptUpdate` | `sudo env DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a /usr/bin/apt-get update` | Low | Ubuntu | – | – | refresh apt package index (apt-get update) — no params |
-| `AptUpgrade` | `sudo env DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a /usr/bin/apt-get dist-upgrade -y` | High | Ubuntu | – | – | upgrade all installed packages via dist-upgrade — no params; High risk |
-| `AptInstall` | `sudo env DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a /usr/bin/apt-get install -y curl` | Medium | Ubuntu | – | – | install a package — param: package\* (string, e.g. nginx) |
-| `AptRemove` | `sudo env DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a /usr/bin/apt-get remove -y curl` | Medium | Ubuntu | – | – | remove a package, keep config files — param: package\* |
-| `AptPurge` | `sudo env DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a /usr/bin/apt-get purge -y curl` | Medium | Ubuntu | – | – | remove a package AND its config files — param: package\* |
-| `AptAutoremove` | `sudo env DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a /usr/bin/apt-get autoremove -y` | Medium | Ubuntu | – | – | remove automatically-installed packages no longer needed — no params |
-| `AptHold` | `sudo apt-mark hold curl` | Medium | Ubuntu | – | – | pin a package at its current version (apt-mark hold) — param: package\* |
-| `AptUnhold` | `sudo apt-mark unhold curl` | Medium | Ubuntu | – | – | unpin a package to allow upgrades (apt-mark unhold) — param: package\* |
+| `AptUpdate` | `sudo /usr/lib/sysknife/action-steps apt update` | Low | Ubuntu | – | – | refresh apt package index (apt-get update) — no params |
+| `AptUpgrade` | `sudo /usr/lib/sysknife/action-steps apt dist-upgrade` | High | Ubuntu | – | – | upgrade all installed packages via dist-upgrade — no params; High risk |
+| `AptInstall` | `sudo /usr/lib/sysknife/action-steps apt install curl` | Medium | Ubuntu | – | – | install a package — param: package\* (string, e.g. nginx) |
+| `AptRemove` | `sudo /usr/lib/sysknife/action-steps apt remove curl` | Medium | Ubuntu | – | – | remove a package, keep config files — param: package\* |
+| `AptPurge` | `sudo /usr/lib/sysknife/action-steps apt purge curl` | Medium | Ubuntu | – | – | remove a package AND its config files — param: package\* |
+| `AptAutoremove` | `sudo /usr/lib/sysknife/action-steps apt autoremove` | Medium | Ubuntu | – | – | remove automatically-installed packages no longer needed — no params |
+| `AptHold` | `sudo /usr/lib/sysknife/action-steps apt hold curl` | Medium | Ubuntu | – | – | pin a package at its current version (apt-mark hold) — param: package\* |
+| `AptUnhold` | `sudo /usr/lib/sysknife/action-steps apt unhold curl` | Medium | Ubuntu | – | – | unpin a package to allow upgrades (apt-mark unhold) — param: package\* |
 | `AptSearch` | `apt-cache search curl` | Low | Ubuntu | – | – | search apt repos for packages — param: term\*; read-only |
 | `AptListInstalled` | `dpkg -l` | Low | Ubuntu | – | – | list all installed packages (dpkg -l) — no params; read-only |
 | `AptShow` | `apt-cache show curl` | Low | Ubuntu | – | – | show package details (version, deps, description) — param: package\*; read-only |
@@ -314,8 +314,8 @@ Every row is derived from the live code: the command from each action's `ActionS
 
 | Action | Command | Risk | Distro | Rb | Ro | Description |
 |---|---|---|---|---|---|---|
-| `AddPpa` | `sudo add-apt-repository -y ppa:deadsnakes/ppa` | High | Ubuntu | – | – | add a Launchpad PPA — param: name\* in &lt;user&gt;/&lt;ppa&gt; format (e.g. 'deadsnakes/ppa'); Ubuntu only; requires software-properties-common |
-| `RemovePpa` | `sudo add-apt-repository -y --remove ppa:deadsnakes/ppa` | Medium | Ubuntu | – | – | remove a Launchpad PPA — param: name\* in &lt;user&gt;/&lt;ppa&gt; format; Ubuntu only |
+| `AddPpa` | `sudo add-apt-repository -y --ppa ppa:deadsnakes/ppa` | High | Ubuntu | – | – | add a Launchpad PPA — param: name\* in &lt;user&gt;/&lt;ppa&gt; format (e.g. 'deadsnakes/ppa'); Ubuntu only; requires software-properties-common |
+| `RemovePpa` | `sudo add-apt-repository -y --remove --ppa ppa:deadsnakes/ppa` | Medium | Ubuntu | – | – | remove a Launchpad PPA — param: name\* in &lt;user&gt;/&lt;ppa&gt; format; Ubuntu only |
 
 ## snap
 
@@ -366,7 +366,7 @@ Every row is derived from the live code: the command from each action's `ActionS
 | Action | Command | Risk | Distro | Rb | Ro | Description |
 |---|---|---|---|---|---|---|
 | `GrubGetKargs` | `grep -E ^GRUB_CMDLINE_LINUX /etc/default/grub` | Low | Ubuntu | – | – | read current GRUB_CMDLINE_LINUX from /etc/default/grub — no params; read-only |
-| `GrubSetKargs` | `sudo /usr/lib/sysknife/grub-kargs-edit --append quiet --delete splash` | High | Ubuntu | ✓ | – | modify GRUB kernel arguments and run update-grub — params: append (list), delete (list), bare tokens only (no '='); both lists are screened for boot-security downgrades; High risk; requires reboot |
+| `GrubSetKargs` | `sudo /usr/lib/sysknife/grub-kargs-edit --append quiet --delete splash` | High | Ubuntu | ✓ | – | modify GRUB kernel arguments and run update-grub — params: append (list), delete (list), bare tokens only (no '='); append accepts only quiet, splash, rhgb, nomodeset, nowatchdog, threadirqs, nosmt, slab_nomerge; delete accepts the first six, the bare ordinary keys SetKernelArguments lists (console, loglevel, …) and known downgrades such as single or nokaslr; anything else is refused; High risk; requires reboot |
 
 ## Ubuntu release upgrade
 
